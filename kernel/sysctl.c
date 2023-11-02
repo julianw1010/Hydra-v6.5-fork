@@ -73,6 +73,7 @@
 #include <asm/nmi.h>
 #include <asm/stacktrace.h>
 #include <asm/io.h>
+#include <asm/tlbflush.h>
 #endif
 #ifdef CONFIG_SPARC
 #include <asm/setup.h>
@@ -82,7 +83,7 @@
 #endif
 
 /* shared constants to be used in various sysctls */
-const int sysctl_vals[] = { 0, 1, 2, 3, 4, 100, 200, 1000, 3000, INT_MAX, 65535, -1 };
+const int sysctl_vals[] = { 0, 1, 2, 3, 4, 100, 200, 1000, 3000, INT_MAX, 65535, -1, 9 };
 EXPORT_SYMBOL(sysctl_vals);
 
 const unsigned long sysctl_long_vals[] = { 0, 1, LONG_MAX };
@@ -2326,6 +2327,26 @@ static struct ctl_table vm_table[] = {
 		.proc_handler	= proc_dointvec_minmax,
 		.extra1		= (void *)&mmap_rnd_compat_bits_min,
 		.extra2		= (void *)&mmap_rnd_compat_bits_max,
+	},
+#endif
+#ifdef CONFIG_X86
+	{
+		.procname	= "hydra_tlbflush_opt",
+		.data		= &sysctl_hydra_tlbflush_opt,
+		.maxlen		= sizeof(int),
+		.mode		= 0644,
+		.proc_handler	= proc_dointvec_minmax,
+		.extra1 = SYSCTL_ZERO,
+		.extra2 = SYSCTL_TWO,
+	},
+	{
+		.procname	= "hydra_repl_order",
+		.data		= &sysctl_hydra_repl_order,
+		.maxlen		= sizeof(int),
+		.mode		= 0644,
+		.proc_handler	= proc_dointvec_minmax,
+		.extra1		= SYSCTL_ZERO,
+		.extra2		= SYSCTL_NINE,
 	},
 #endif
 	{ }

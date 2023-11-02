@@ -976,6 +976,8 @@ static inline int pgd_none(pgd_t pgd)
 
 #endif	/* __ASSEMBLY__ */
 
+#define pgd_offset_node(mm, address, node) pgd_offset_pgd((mm)->repl_pgd[(node)], (address))
+
 #define KERNEL_PGD_BOUNDARY	pgd_index(PAGE_OFFSET)
 #define KERNEL_PGD_PTRS		(PTRS_PER_PGD - KERNEL_PGD_BOUNDARY)
 
@@ -1063,39 +1065,20 @@ extern int ptep_clear_flush_young(struct vm_area_struct *vma,
 				  unsigned long address, pte_t *ptep);
 
 #define __HAVE_ARCH_PTEP_GET_AND_CLEAR
-static inline pte_t ptep_get_and_clear(struct mm_struct *mm, unsigned long addr,
-				       pte_t *ptep)
-{
-	pte_t pte = native_ptep_get_and_clear(ptep);
-	page_table_check_pte_clear(mm, addr, pte);
-	return pte;
-}
+pte_t ptep_get_and_clear(struct mm_struct *mm, unsigned long addr,
+				       pte_t *ptep);
 
 #define __HAVE_ARCH_PTEP_GET_AND_CLEAR_FULL
 static inline pte_t ptep_get_and_clear_full(struct mm_struct *mm,
 					    unsigned long addr, pte_t *ptep,
 					    int full)
 {
-	pte_t pte;
-	if (full) {
-		/*
-		 * Full address destruction in progress; paravirt does not
-		 * care about updates and native needs no locking
-		 */
-		pte = native_local_ptep_get_and_clear(ptep);
-		page_table_check_pte_clear(mm, addr, pte);
-	} else {
-		pte = ptep_get_and_clear(mm, addr, ptep);
-	}
-	return pte;
+	return ptep_get_and_clear(mm, addr, ptep);
 }
 
 #define __HAVE_ARCH_PTEP_SET_WRPROTECT
-static inline void ptep_set_wrprotect(struct mm_struct *mm,
-				      unsigned long addr, pte_t *ptep)
-{
-	clear_bit(_PAGE_BIT_RW, (unsigned long *)&ptep->pte);
-}
+void ptep_set_wrprotect(struct mm_struct *mm,
+				      unsigned long addr, pte_t *ptep);
 
 #define flush_tlb_fix_spurious_fault(vma, address, ptep) do { } while (0)
 
@@ -1259,6 +1242,9 @@ static inline p4d_t *user_to_kernel_p4dp(p4d_t *p4dp)
  */
 static inline void clone_pgd_range(pgd_t *dst, pgd_t *src, int count)
 {
+	// printk("Copying from src: %x to dst: %x \n",src, dst);
+	// printk("before dst: %x\n", dst[0]);
+	// printk("before src: %x\n", src[0]);
 	memcpy(dst, src, count * sizeof(pgd_t));
 #ifdef CONFIG_PAGE_TABLE_ISOLATION
 	if (!static_cpu_has(X86_FEATURE_PTI))
@@ -1266,6 +1252,8 @@ static inline void clone_pgd_range(pgd_t *dst, pgd_t *src, int count)
 	/* Clone the user space pgd as well */
 	memcpy(kernel_to_user_pgdp(dst), kernel_to_user_pgdp(src),
 	       count * sizeof(pgd_t));
+	// printk("after dst: %x\n", dst[0]);
+	// printk("after src: %x\n", src[0]);
 #endif
 }
 
@@ -1476,6 +1464,11 @@ static inline bool pud_user_accessible_page(pud_t pud)
 	return pud_leaf(pud) && (pud_val(pud) & _PAGE_PRESENT) && (pud_val(pud) & _PAGE_USER);
 }
 #endif
+
+void pgtable_repl_set_pte(pte_t *ptep, pte_t pteval);
+pte_t pgtable_repl_get_pte(pte_t *ptep);
+void pgtable_repl_set_pte_at(struct mm_struct *mm, unsigned long addr, pte_t *ptep, pte_t pteval);
+void init_lazy_pgtabls_repl(void);
 
 #endif	/* __ASSEMBLY__ */
 

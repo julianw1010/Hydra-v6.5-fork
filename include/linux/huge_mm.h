@@ -103,6 +103,7 @@ extern unsigned long transparent_hugepage_flags;
 static inline bool transhuge_vma_suitable(struct vm_area_struct *vma,
 		unsigned long addr)
 {
+#if 0
 	unsigned long haddr;
 
 	/* Don't have to check pgoff for anonymous vma */
@@ -117,6 +118,8 @@ static inline bool transhuge_vma_suitable(struct vm_area_struct *vma,
 	if (haddr < vma->vm_start || haddr + HPAGE_PMD_SIZE > vma->vm_end)
 		return false;
 	return true;
+#endif
+    return false;
 }
 
 static inline bool file_thp_enabled(struct vm_area_struct *vma)

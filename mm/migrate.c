@@ -213,6 +213,9 @@ static bool remove_migration_pte(struct folio *folio,
 		if (pte_swp_soft_dirty(*pvmw.pte))
 			pte = pte_mksoft_dirty(pte);
 
+		/*
+		 * Recheck VMA as permissions can change since migration started
+		 */
 		entry = pte_to_swp_entry(*pvmw.pte);
 		if (!is_migration_entry_young(entry))
 			pte = pte_mkold(pte);

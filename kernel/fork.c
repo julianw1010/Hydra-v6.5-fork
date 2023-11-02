@@ -757,8 +757,9 @@ static __latent_entropy int dup_mmap(struct mm_struct *mm,
 			goto fail_nomem_vmi_store;
 
 		mm->map_count++;
-		if (!(tmp->vm_flags & VM_WIPEONFORK))
+		if (!(tmp->vm_flags & VM_WIPEONFORK)) {
 			retval = copy_page_range(tmp, mpnt);
+		}
 
 		if (tmp->vm_ops && tmp->vm_ops->open)
 			tmp->vm_ops->open(tmp);
@@ -803,7 +804,10 @@ static inline int mm_alloc_pgd(struct mm_struct *mm)
 
 static inline void mm_free_pgd(struct mm_struct *mm)
 {
-	pgd_free(mm, mm->pgd);
+	int i;
+	for (i = 0; i < NUMA_NODE_COUNT; i++) {
+		pgd_free(mm, mm->repl_pgd[i]);
+	}
 }
 #else
 static int dup_mmap(struct mm_struct *mm, struct mm_struct *oldmm)
@@ -1271,6 +1275,7 @@ static struct mm_struct *mm_init(struct mm_struct *mm, struct task_struct *p,
 	mm->map_count = 0;
 	mm->locked_vm = 0;
 	atomic64_set(&mm->pinned_vm, 0);
+	mm->lazy_repl_enabled = false;
 	memset(&mm->rss_stat, 0, sizeof(mm->rss_stat));
 	spin_lock_init(&mm->page_table_lock);
 	spin_lock_init(&mm->arg_lock);
@@ -1290,9 +1295,13 @@ static struct mm_struct *mm_init(struct mm_struct *mm, struct task_struct *p,
 	if (current->mm) {
 		mm->flags = current->mm->flags & MMF_INIT_MASK;
 		mm->def_flags = current->mm->def_flags & VM_INIT_DEF_MASK;
+		mm->lazy_repl_enabled = current->mm->lazy_repl_enabled;
+		mm->va_segregation_mode = current->mm->va_segregation_mode;
 	} else {
 		mm->flags = default_dump_filter;
 		mm->def_flags = 0;
+		mm->lazy_repl_enabled = false;
+		mm->va_segregation_mode = 0;
 	}
 
 	if (mm_alloc_pgd(mm))
@@ -1308,8 +1317,14 @@ static struct mm_struct *mm_init(struct mm_struct *mm, struct task_struct *p,
 		if (percpu_counter_init(&mm->rss_stat[i], 0, GFP_KERNEL_ACCOUNT))
 			goto fail_pcpu;
 
-	mm->user_ns = get_user_ns(user_ns);
 	lru_gen_init_mm(mm);
+	mm->user_ns = get_user_ns(user_ns);
+
+	mm->repl_pgd[0] = mm->pgd;
+	for (i=1; i < NUMA_NODE_COUNT; i++) {
+		mm->repl_pgd[i] = repl_pgd_alloc(mm, i);
+	}
+
 	return mm;
 
 fail_pcpu:
@@ -1343,6 +1358,14 @@ struct mm_struct *mm_alloc(void)
 static inline void __mmput(struct mm_struct *mm)
 {
 	VM_BUG_ON(atomic_read(&mm->mm_users));
+
+	// if (mm->lazy_repl_enabled) {
+	// 	for (i = 0; i < NR_MM_COUNTERS; i++) {
+	// 		long x = atomic_long_read(&mm->rss_stat.count[i]);
+
+	// 		printk("rss-counter state before mmdrop is mm:%p idx:%d val:%ld\n", mm, i, x);
+	// 	}
+	// }
 
 	uprobe_clear_state(mm);
 	exit_aio(mm);
@@ -1737,6 +1760,7 @@ static int copy_mm(unsigned long clone_flags, struct task_struct *tsk)
 	if (clone_flags & CLONE_VM) {
 		mmget(oldmm);
 		mm = oldmm;
+		// printk("Lazy Page replication status is %d\n", mm->lazy_repl_enabled);
 	} else {
 		mm = dup_mm(tsk, current->mm);
 		if (!mm)

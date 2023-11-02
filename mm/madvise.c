@@ -765,6 +765,7 @@ static int madvise_free_single_vma(struct vm_area_struct *vma,
 
 	lru_add_drain();
 	tlb_gather_mmu(&tlb, mm);
+	tlb.vma = vma;
 	update_hiwater_rss(mm);
 
 	mmu_notifier_invalidate_range_start(&range);

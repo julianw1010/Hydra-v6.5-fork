@@ -70,6 +70,7 @@ struct mem_cgroup;
 #else
 #define _struct_page_alignment	__aligned(sizeof(unsigned long))
 #endif
+#define NUMA_NODE_COUNT 2
 
 struct page {
 	unsigned long flags;		/* Atomic flags, some possibly
@@ -224,6 +225,8 @@ struct page {
 	struct page *kmsan_shadow;
 	struct page *kmsan_origin;
 #endif
+
+struct page *next_replica;
 
 #ifdef LAST_CPUPID_NOT_IN_PAGE_FLAGS
 	int _last_cpupid;
@@ -521,6 +524,8 @@ struct vm_area_struct {
 	bool detached;
 #endif
 
+	unsigned long  master_pgd_node;
+
 	/*
 	 * For areas with an address space and backing store,
 	 * linkage into the address_space->i_mmap interval tree.
@@ -596,8 +601,13 @@ struct mm_struct {
 		unsigned long mmap_compat_base;
 		unsigned long mmap_compat_legacy_base;
 #endif
-		unsigned long task_size;	/* size of task vm space */
-		pgd_t * pgd;
+	unsigned long task_size;		/* size of task vm space */
+	unsigned long highest_vm_end;		/* highest vma end address */
+
+	bool          lazy_repl_enabled;
+	int           va_segregation_mode;
+	pgd_t * repl_pgd[NUMA_NODE_COUNT];
+	pgd_t * pgd;
 
 #ifdef CONFIG_MEMBARRIER
 		/**

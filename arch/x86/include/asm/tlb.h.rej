@@ -1,0 +1,27 @@
+--- a/arch/x86/include/asm/tlb.h
++++ b/arch/x86/include/asm/tlb.h
+@@ -18,17 +18,18 @@ static inline void tlb_flush(struct mmu_gather *tlb)
+                end = tlb->end;
+ 
+         if (tlb->collect_nodemask) {
+-            // printk("Flush mm_node_range!\n");
+-            flush_tlb_mm_node_range(tlb->mm, tlb->start, tlb->end, stride_shift, tlb->freed_tables, &tlb->nodemask);
++            // printk("Nodemask: %llx\n", (uint64_t) *((tlb->nodemask).bits));
++            // printk("A\n");
++            flush_tlb_mm_node_range(tlb->mm, start, end, stride_shift, tlb->freed_tables, &tlb->nodemask);
+         } else if (tlb->vma) {
+-            // printk("Flush vma_range!\n");
+-            flush_tlb_vma_range(tlb->vma, tlb->start, tlb->end, stride_shift, tlb->freed_tables);
++            // printk("B\n");
++            flush_tlb_vma_range(tlb->vma, start, end, stride_shift, tlb->freed_tables);
+         } else {
+-            // printk("Flush tlb_mm_range!\n");
++            // printk("C\n");
+                flush_tlb_mm_range(tlb->mm, start, end, stride_shift, tlb->freed_tables);
+         }
+        } else {
+-        // printk("Flush mm__range!\n");
++        // printk("D\n");
+            flush_tlb_mm_range(tlb->mm, start, end, stride_shift, tlb->freed_tables);
+     }
+ }

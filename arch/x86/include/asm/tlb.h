@@ -15,10 +15,19 @@ static inline void tlb_flush(struct mmu_gather *tlb)
 	if (!tlb->fullmm && !tlb->need_flush_all) {
 		start = tlb->start;
 		end = tlb->end;
-	}
 
-	flush_tlb_mm_range(tlb->mm, start, end, stride_shift, tlb->freed_tables);
+        if (tlb->collect_nodemask) {
+            flush_tlb_mm_node_range(tlb->mm, start, end, stride_shift, tlb->freed_tables, &tlb->nodemask);
+        } else if (tlb->vma) {
+            flush_tlb_vma_range(tlb->vma, start, end, stride_shift, tlb->freed_tables);
+        } else {
+	    flush_tlb_mm_range(tlb->mm, start, end, stride_shift, tlb->freed_tables);
+        }
+	} else {
+	    flush_tlb_mm_range(tlb->mm, start, end, stride_shift, tlb->freed_tables);
+    }
 }
+
 
 /*
  * While x86 architecture in general requires an IPI to perform TLB

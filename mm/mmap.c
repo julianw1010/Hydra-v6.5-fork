@@ -51,6 +51,7 @@
 #include <linux/uaccess.h>
 #include <asm/cacheflush.h>
 #include <asm/tlb.h>
+#include <asm/tlbflush.h>
 #include <asm/mmu_context.h>
 
 #define CREATE_TRACE_POINTS
@@ -817,6 +818,12 @@ can_vma_merge_before(struct vm_area_struct *vma, unsigned long vm_flags,
 		pgoff_t vm_pgoff, struct vm_userfaultfd_ctx vm_userfaultfd_ctx,
 		struct anon_vma_name *anon_name)
 {
+	struct mm_struct *mm = vma->vm_mm;
+
+	if (mm->lazy_repl_enabled && (vma->master_pgd_node != numa_node_id())) {
+		return 0;
+	}
+
 	if (is_mergeable_vma(vma, file, vm_flags, vm_userfaultfd_ctx, anon_name, true) &&
 	    is_mergeable_anon_vma(anon_vma, vma->anon_vma, vma)) {
 		if (vma->vm_pgoff == vm_pgoff)
@@ -840,6 +847,12 @@ can_vma_merge_after(struct vm_area_struct *vma, unsigned long vm_flags,
 		pgoff_t vm_pgoff, struct vm_userfaultfd_ctx vm_userfaultfd_ctx,
 		struct anon_vma_name *anon_name)
 {
+	struct mm_struct *mm = vma->vm_mm;
+
+	if (mm->lazy_repl_enabled && (vma->master_pgd_node != numa_node_id())) {
+		return 0;
+	}
+
 	if (is_mergeable_vma(vma, file, vm_flags, vm_userfaultfd_ctx, anon_name, false) &&
 	    is_mergeable_anon_vma(anon_vma, vma->anon_vma, vma)) {
 		pgoff_t vm_pglen;
@@ -849,6 +862,7 @@ can_vma_merge_after(struct vm_area_struct *vma, unsigned long vm_flags,
 	}
 	return false;
 }
+
 
 /*
  * Given a mapping request (addr,end,vm_flags,file,pgoff,anon_name),
@@ -2214,6 +2228,10 @@ static void unmap_region(struct mm_struct *mm, struct maple_tree *mt,
 
 	lru_add_drain();
 	tlb_gather_mmu(&tlb, mm);
+	if (mm->lazy_repl_enabled && sysctl_hydra_tlbflush_opt) {
+		tlb.collect_nodemask = 1;
+		nodes_clear(tlb.nodemask);
+	}
 	update_hiwater_rss(mm);
 	unmap_vmas(&tlb, mt, vma, start, end, mm_wr_locked);
 	free_pgtables(&tlb, mt, vma, prev ? prev->vm_end : FIRST_USER_ADDRESS,
@@ -2637,6 +2655,11 @@ cannot_expand:
 	vm_flags_init(vma, vm_flags);
 	vma->vm_page_prot = vm_get_page_prot(vm_flags);
 	vma->vm_pgoff = pgoff;
+    if (mm->lazy_repl_enabled) {
+        vma->master_pgd_node = numa_node_id();
+    } else {
+        vma->master_pgd_node = 0;
+    }
 
 	if (file) {
 		if (vm_flags & VM_SHARED) {

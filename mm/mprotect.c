@@ -36,6 +36,10 @@
 #include <asm/mmu_context.h>
 #include <asm/tlbflush.h>
 #include <asm/tlb.h>
+#include <linux/hydra_util.h>
+#include <linux/hydra_debug.h>
+
+
 
 #include "internal.h"
 
@@ -119,6 +123,9 @@ static long change_pte_range(struct mmu_gather *tlb,
 	arch_enter_lazy_mmu_mode();
 	do {
 		oldpte = *pte;
+		if (vma->vm_mm->lazy_repl_enabled && ((virt_to_page(pte))->next_replica)) {
+				oldpte = pgtable_repl_get_pte(pte);
+		}
 		if (pte_present(oldpte)) {
 			pte_t ptent;
 
@@ -535,7 +542,11 @@ static long change_protection_range(struct mmu_gather *tlb,
 	long pages = 0, ret;
 
 	BUG_ON(addr >= end);
-	pgd = pgd_offset(mm, addr);
+	if (mm->lazy_repl_enabled) {
+		pgd = pgd_offset_node(mm, addr, vma->master_pgd_node);
+	} else {
+		pgd = pgd_offset(mm, addr);
+	}
 	tlb_start_vma(tlb, vma);
 	do {
 		next = pgd_addr_end(addr, end);
@@ -579,9 +590,10 @@ long change_protection(struct mmu_gather *tlb,
 	if (is_vm_hugetlb_page(vma))
 		pages = hugetlb_change_protection(vma, start, end, newprot,
 						  cp_flags);
-	else
+	else {
 		pages = change_protection_range(tlb, vma, start, end, newprot,
 						cp_flags);
+    }
 
 	return pages;
 }
@@ -811,6 +823,14 @@ static int do_mprotect_pkey(unsigned long start, size_t len,
 			break;
 		}
 
+		if (vma->vm_mm->lazy_repl_enabled && sysctl_hydra_tlbflush_opt) {
+			pte_t *pte = hydra_find_pte(vma->vm_mm, nstart, vma->master_pgd_node);
+			if (!HYDRA_FIND_BAD(pte)) {
+				nodes_clear(tlb.nodemask);
+				hydra_calculate_tlbflush_nodemask(virt_to_page(pte), &tlb.nodemask);
+			}
+		}
+
 		/* Does the application expect PROT_READ to imply PROT_EXEC */
 		if (rier && (vma->vm_flags & VM_MAYEXEC))
 			prot |= PROT_EXEC;
@@ -864,8 +884,12 @@ static int do_mprotect_pkey(unsigned long start, size_t len,
 		tmp = vma_iter_end(&vmi);
 		nstart = tmp;
 		prot = reqprot;
-	}
+
+	tlb.collect_nodemask = 1;
 	tlb_finish_mmu(&tlb);
+	tlb.collect_nodemask = 0;
+	}
+
 
 	if (!error && tmp < end)
 		error = -ENOMEM;

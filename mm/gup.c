@@ -800,7 +800,11 @@ static struct page *follow_page_mask(struct vm_area_struct *vma,
 		return page;
 	}
 
-	pgd = pgd_offset(mm, address);
+	if (mm->lazy_repl_enabled) {
+		pgd = pgd_offset_node(mm, address, numa_node_id());
+	} else {
+		pgd = pgd_offset(mm, address);
+	}
 
 	if (pgd_none(*pgd) || unlikely(pgd_bad(*pgd)))
 		return no_page_table(vma, flags);
@@ -2858,7 +2862,7 @@ static void gup_pgd_range(unsigned long addr, unsigned long end,
 	unsigned long next;
 	pgd_t *pgdp;
 
-	pgdp = pgd_offset(current->mm, addr);
+	pgdp = current->mm->lazy_repl_enabled ? pgd_offset_node(current->mm, addr, numa_node_id()) : pgd_offset(current->mm, addr);
 	do {
 		pgd_t pgd = READ_ONCE(*pgdp);
 

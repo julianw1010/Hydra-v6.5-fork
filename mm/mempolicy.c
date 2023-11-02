@@ -105,6 +105,7 @@
 
 #include <asm/tlbflush.h>
 #include <asm/tlb.h>
+#include <asm/pgtable.h>
 #include <linux/uaccess.h>
 
 #include "internal.h"
@@ -3158,3 +3159,147 @@ void mpol_to_str(char *buffer, int maxlen, struct mempolicy *pol)
 		p += scnprintf(p, buffer + maxlen - p, ":%*pbl",
 			       nodemask_pr_args(&nodes));
 }
+
+#define CONFIG_PGTABLE_REPLICATION
+
+#ifdef CONFIG_PGTABLE_REPLICATION
+
+static long kernel_set_pgtlbreplpolicy(int mode, const unsigned long __user *nmask,
+                                       unsigned long maxnode)
+{
+    /* int err; */
+    
+	struct mm_struct *mm = current->mm;
+	if (mode) {
+		printk("[HYDRA]: Lazy page table replication enabled...\n");
+		init_lazy_pgtabls_repl();
+		mm->lazy_repl_enabled = true;
+	} else {
+		printk("[HYDRA]: Lazy page table replication disabled...\n");
+		mm->lazy_repl_enabled = false;
+	}
+	// nodemask_t nodes;
+
+	// if (mode) {
+	// 	err = get_nodes(&nodes, nmask, maxnode);
+	// 	if (err)
+	// 		return err;
+
+	// 	if (mm->repl_pgd_enabled) {
+	// 		/* we cannot change the replication policy at runtime to include more or less nodes */
+	// 		if (!nodes_equal(mm->repl_pgd_nodes, nodes)) {
+	// 			return -EINVAL;
+	// 		}
+
+	// 		printk("[mitosis] NOTE: pgtable replication already enabled...\n");
+
+	// 		return 0;
+	// 	}
+
+	// 	/* replication is disabled */
+	// 	if (nodes_empty(mm->repl_pgd_nodes)) {
+	// 		/* prepare replication */
+	// 		err = pgtbl_repl_prepare_replication(mm, nodes);
+
+	// 		printk("[mitosis] pgtable replication %s for mm=%lx.\n",
+	// 				mm->repl_pgd_enabled ? "enabled" : "disabled", (long)mm);
+
+	// 		return err;
+	// 	} else {
+	// 		if (!nodes_equal(mm->repl_pgd_nodes, nodes)) {
+	// 			return -EINVAL;
+	// 		}
+
+	// 		printk("[mitosis] NOTE: pgtable replication already enabled...\n");
+
+	// 		/* we already have replicas, enable and return */
+	// 		mm->repl_pgd_enabled = true;
+	// 		return 0;
+	// 	}
+	// } else {
+
+	// 	if (!mm->repl_pgd_enabled) {
+	// 		/* nothing to be done, return */
+	// 		return 0;
+	// 	}
+
+	// 	/* disable */
+	// 	mm->repl_pgd_enabled = false;
+
+	// 	printk("[mitosis] NOTE: pgtable replication disabled for mm=%lx.\n", mm);
+	// }
+    printk("set page table syscall\n");
+
+	return 0;
+}
+
+static int kernel_get_pgtlbreplpolicy(int __user *policy,
+                                      unsigned long __user *nmask,
+                                      unsigned long maxnode,
+                                      unsigned long addr,
+                                      unsigned long flags)
+{
+	int err = 0;
+	/*
+    int pval = 0;
+	struct mm_struct *mm = current->mm;
+
+	if (nmask != NULL && maxnode < MAX_NUMNODES)
+		return -EINVAL;
+
+	if (mm->repl_pgd_enabled) {
+		pval = 1;
+	}
+
+	if (policy && put_user(pval, policy))
+		return -EFAULT;
+
+	if (nmask)
+		err = copy_nodes_to_user(nmask, maxnode, &mm->repl_pgd_nodes);
+    */
+    printk("get info from numactl");
+
+	return err;
+}
+
+
+#else // !CONFIG_PGTABLE_REPLICATION
+
+static long kernel_set_pgtlbreplpolicy(int mode, const unsigned long __user *nmask,
+                                       unsigned long maxnode)
+{
+	return 0;
+}
+
+static int kernel_get_pgtlbreplpolicy(int __user *policy,
+                                      unsigned long __user *nmask,
+                                      unsigned long maxnode,
+                                      unsigned long addr,
+                                      unsigned long flags)
+{
+	return 0;
+}
+
+#endif // CONFIG_PGTABLE_REPLICATION
+
+SYSCALL_DEFINE1(set_va_segregation_mode, int, mode) {
+	if (mode == 0 || mode == 1 || mode == 2) {
+		current->mm->va_segregation_mode = mode;
+		return 0;
+	}
+	return -EINVAL;
+}
+
+SYSCALL_DEFINE3(set_pgtblreplpolicy, int, mode, const unsigned long __user *, nmask,
+                unsigned long, maxnode)
+{
+	return kernel_set_pgtlbreplpolicy(mode, nmask, maxnode);
+}
+
+SYSCALL_DEFINE5(get_pgtblreplpolicy, int __user *, policy,
+                unsigned long __user *, nmask, unsigned long, maxnode,
+                unsigned long, addr, unsigned long, flags)
+{
+	return kernel_get_pgtlbreplpolicy(policy, nmask, maxnode, addr, flags);
+}
+

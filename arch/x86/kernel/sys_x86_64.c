@@ -162,10 +162,12 @@ arch_get_unmapped_area_topdown(struct file *filp, const unsigned long addr0,
 			  const unsigned long len, const unsigned long pgoff,
 			  const unsigned long flags)
 {
+	const unsigned long mask_2m = ((1ul << 21) - 1ul) & PAGE_MASK;
 	struct vm_area_struct *vma;
 	struct mm_struct *mm = current->mm;
 	unsigned long addr = addr0;
 	struct vm_unmapped_area_info info;
+	int do_segregation = mm->va_segregation_mode;
 
 	/* requested length too big for entire address space */
 	if (len > TASK_SIZE)
@@ -195,6 +197,14 @@ get_unmapped_area:
 	info.length = len;
 	info.low_limit = PAGE_SIZE;
 	info.high_limit = get_mmap_base(0);
+	switch (do_segregation) {
+		case 1:
+			info.high_limit -= (unsigned long)(numa_node_id()) << 40;
+			break;
+		case 2:
+			info.high_limit -= (unsigned long)(smp_processor_id()) << 40;
+			break;
+	}
 
 	/*
 	 * If hint address is above DEFAULT_MAP_WINDOW, look for unmapped area
@@ -212,10 +222,17 @@ get_unmapped_area:
 		info.align_mask = get_align_mask();
 		info.align_offset += get_align_bits();
 	}
+	if (do_segregation && info.align_mask < mask_2m) {
+		info.align_mask = mask_2m;
+	}
 	addr = vm_unmapped_area(&info);
 	if (!(addr & ~PAGE_MASK))
 		return addr;
 	VM_BUG_ON(addr != -ENOMEM);
+	if (do_segregation) {
+		do_segregation = 0;
+		goto get_unmapped_area;
+	}
 
 bottomup:
 	/*

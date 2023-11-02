@@ -1452,12 +1452,14 @@ static bool try_to_unmap_one(struct folio *folio, struct vm_area_struct *vma,
 		     unsigned long address, void *arg)
 {
 	struct mm_struct *mm = vma->vm_mm;
+
 	DEFINE_FOLIO_VMA_WALK(pvmw, folio, vma, address, 0);
 	pte_t pteval;
 	struct page *subpage;
 	bool anon_exclusive, ret = true;
 	struct mmu_notifier_range range;
 	enum ttu_flags flags = (enum ttu_flags)(long)arg;
+
 
 	/*
 	 * When racing against e.g. zap_pte_range() on another cpu,
@@ -1586,7 +1588,7 @@ static bool try_to_unmap_one(struct folio *folio, struct vm_area_struct *vma,
 
 				set_tlb_ubc_flush_pending(mm, pteval);
 			} else {
-				pteval = ptep_clear_flush(vma, address, pvmw.pte);
+                pteval = ptep_clear_flush(vma, address, pvmw.pte);
 			}
 		}
 

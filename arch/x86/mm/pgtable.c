@@ -6,6 +6,10 @@
 #include <asm/tlb.h>
 #include <asm/fixmap.h>
 #include <asm/mtrr.h>
+#include <linux/swapops.h>
+#include <linux/signal.h>
+#include <linux/sched/signal.h>
+#include <linux/hydra_debug.h>
 
 #ifdef CONFIG_DYNAMIC_PHYSICAL_MASK
 phys_addr_t physical_mask __ro_after_init = (1ULL << __PHYSICAL_MASK_SHIFT) - 1;
@@ -546,10 +550,44 @@ int ptep_test_and_clear_young(struct vm_area_struct *vma,
 			      unsigned long addr, pte_t *ptep)
 {
 	int ret = 0;
+	long offset;
+	struct page *start_pte_page;
+	struct page *current_pte_page;
+	unsigned int replicas_seen = 1;
 
-	if (pte_young(*ptep))
+
+	if (pte_young(*ptep)) {
 		ret = test_and_clear_bit(_PAGE_BIT_ACCESSED,
 					 (unsigned long *) &ptep->pte);
+	}
+	
+	start_pte_page = virt_to_page(ptep);
+
+	if (start_pte_page->next_replica == NULL)
+	{
+		return ret;
+	}
+
+	offset = (long)ptep - (long)page_to_virt(start_pte_page);
+	current_pte_page = start_pte_page->next_replica;
+
+	while (current_pte_page != start_pte_page) {
+		if (replicas_seen >= NUMA_NODE_COUNT * 2) {
+			WARN(1, "replicas_seen = %d > NUMA_NODE_COUNT = %d", replicas_seen, NUMA_NODE_COUNT);
+			do_hydra_dump_ll(vma->vm_mm, addr);
+			if (current) {
+				do_send_sig_info(SIGKILL, SEND_SIG_PRIV, current, true);
+			}
+			return -1;
+		}
+		ptep = (pte_t *)((long)page_to_virt(current_pte_page) + offset);
+		if (pte_young(*ptep)) {
+			ret |= test_and_clear_bit(_PAGE_BIT_ACCESSED,
+						(unsigned long *) &ptep->pte);
+		}
+		current_pte_page = current_pte_page->next_replica;
+		++replicas_seen;
+	}
 
 	return ret;
 }
@@ -880,3 +918,238 @@ int pmd_free_pte_page(pmd_t *pmd, unsigned long addr)
 
 #endif /* CONFIG_X86_64 */
 #endif	/* CONFIG_HAVE_ARCH_HUGE_VMAP */
+
+static bool pgtable_repl_initialized = false;
+
+void init_lazy_pgtabls_repl(void)
+{
+	if (unlikely(!pgtable_repl_initialized)) {
+		pgtable_repl_initialized = true;
+		printk("[HYDRA]: Lazy page table replication initialized!\n");
+	}
+}
+
+pgtable_t repl_pte_alloc_one(struct mm_struct *mm, unsigned long address, size_t nid)
+{
+	struct page *pte;
+
+	pte = repl_alloc_page_on_node(nid, 0);
+	if (!pte)
+		return NULL;
+	if (!pgtable_pte_page_ctor(pte)) {
+		__free_page(pte);
+		return NULL;
+	}
+	return pte;
+}
+
+pgd_t *repl_pgd_alloc(struct mm_struct *mm, size_t nid)
+{
+	pgd_t *pgd;
+	pmd_t *pmds[PREALLOCATED_PMDS];
+
+	pgd = (pgd_t *)page_address(repl_alloc_page_on_node(nid, PGD_ALLOCATION_ORDER));
+
+	if (pgd == NULL)
+		goto out;
+
+	// if (preallocate_pmds(mm, pmds) != 0)
+	// 	goto out_free_pgd;
+
+	// if (paravirt_pgd_alloc(mm) != 0)
+	// 	goto out_free_pmds;
+
+	/*
+	 * Make sure that pre-populating the pmds is atomic with
+	 * respect to anything walking the pgd_list, so that they
+	 * never see a partially populated pgd.
+	 */
+	spin_lock(&pgd_lock);
+
+	pgd_ctor(mm, pgd);
+	pgd_prepopulate_pmd(mm, pgd, pmds);
+
+	spin_unlock(&pgd_lock);
+
+	return pgd;
+
+// out_free_pmds:
+// 	free_pmds(mm, pmds);
+// out_free_pgd:
+// 	_pgd_free(pgd);
+out:
+	return NULL;
+}
+
+void pgtable_repl_set_pte(pte_t *ptep, pte_t pteval)
+{
+	long offset;
+	struct page *start_pte_page;
+	struct page *current_pte_page;
+	unsigned int replicas_seen = 1;
+
+	native_set_pte(ptep, pteval);
+
+	if (!pgtable_repl_initialized) {
+		return;
+	}
+
+	start_pte_page = virt_to_page(ptep);
+
+	if (start_pte_page->next_replica == NULL)
+	{
+		return;
+	}
+
+	offset = (long)ptep - (long)page_to_virt(start_pte_page);
+	current_pte_page = start_pte_page->next_replica;
+
+	while (current_pte_page != start_pte_page)
+	{
+		if (replicas_seen >= NUMA_NODE_COUNT * 2) {
+			WARN(1, "replicas_seen = %d > NUMA_NODE_COUNT = %d", replicas_seen, NUMA_NODE_COUNT);
+			if (current) {
+				do_send_sig_info(SIGKILL, SEND_SIG_PRIV, current, true);
+			}
+			return;
+		}
+		ptep = (pte_t *)((long)page_to_virt(current_pte_page) + offset);
+		native_set_pte(ptep, pteval);
+		current_pte_page = current_pte_page->next_replica;
+		++replicas_seen;
+	}
+}
+
+pte_t pgtable_repl_get_pte(pte_t *ptep)
+{
+	long offset;
+	struct page *start_pte_page;
+	struct page *current_pte_page;
+	unsigned int replicas_seen = 1;
+
+	pteval_t val = pte_val(*ptep);
+
+	if (!pgtable_repl_initialized) {
+		return native_make_pte(val);
+	}
+
+	if (!pte_present(*ptep) || is_swap_pte(*ptep) || (!pte_present(*ptep) && is_migration_entry(pte_to_swp_entry(*ptep)))) {
+		return native_make_pte(val);
+	}
+
+	start_pte_page = virt_to_page(ptep);
+
+	if (start_pte_page->next_replica == NULL) {
+		return native_make_pte(val);
+	}
+
+	offset = (long)ptep - (long)page_to_virt(start_pte_page);
+	current_pte_page = start_pte_page->next_replica;
+
+	while (current_pte_page != start_pte_page)
+	{
+		if (replicas_seen >= NUMA_NODE_COUNT * 2) {
+			WARN(1, "replicas_seen = %d > NUMA_NODE_COUNT = %d", replicas_seen, NUMA_NODE_COUNT);
+			if (current) {
+				do_send_sig_info(SIGKILL, SEND_SIG_PRIV, current, true);
+			}
+			break;
+		}
+		ptep = (pte_t *)((long)page_to_virt(current_pte_page) + offset);
+		val |= pte_val(*ptep);
+		current_pte_page = current_pte_page->next_replica;
+		++replicas_seen;
+	}
+
+	return native_make_pte(val);
+}
+
+void pgtable_repl_set_pte_at(struct mm_struct *mm, unsigned long addr, pte_t *ptep, pte_t pteval)
+{
+	pgtable_repl_set_pte(ptep, pteval);
+}
+
+pte_t ptep_get_and_clear(struct mm_struct *mm, unsigned long addr, pte_t *ptep)
+{
+	long offset;
+	struct page *start_pte_page;
+	struct page *current_pte_page;
+	unsigned int replicas_seen = 1;
+
+	pteval_t pteval;
+	pteval_t flags;
+
+	flags = pte_flags(*ptep);
+	pteval = pte_val(native_ptep_get_and_clear(ptep));
+
+	if (!mm->lazy_repl_enabled) {
+		return native_make_pte(pteval);
+	}
+
+	start_pte_page = virt_to_page(ptep);
+
+	if (start_pte_page->next_replica == NULL) {
+		return native_make_pte(pteval);
+	}
+
+	offset = (long)ptep - (long)page_to_virt(start_pte_page);
+	current_pte_page = start_pte_page->next_replica;
+	while (current_pte_page != start_pte_page)
+	{
+		if (replicas_seen >= NUMA_NODE_COUNT * 2) {
+			WARN(1, "replicas_seen = %d > NUMA_NODE_COUNT = %d", replicas_seen, NUMA_NODE_COUNT);
+			do_hydra_dump_ll(mm, addr);
+			if (current) {
+				do_send_sig_info(SIGKILL, SEND_SIG_PRIV, current, true);
+			}
+			break;
+		}
+		ptep = (pte_t *)((long)page_to_virt(current_pte_page) + offset);
+		flags |= pte_flags(native_ptep_get_and_clear(ptep));
+		current_pte_page = current_pte_page->next_replica;
+		++replicas_seen;
+	}
+
+	return pte_set_flags(native_make_pte(pteval), flags);
+}
+
+void ptep_set_wrprotect(struct mm_struct *mm, unsigned long addr, pte_t *ptep)
+{
+	long offset;
+	struct page *start_pte_page;
+	struct page *current_pte_page;
+	unsigned int replicas_seen = 1;
+
+	clear_bit(_PAGE_BIT_RW, (unsigned long *)&ptep->pte);
+
+	if (!mm->lazy_repl_enabled) {
+		return;
+	}
+
+	start_pte_page = virt_to_page(ptep);
+
+	if (start_pte_page->next_replica == NULL) {
+		return;
+	}
+
+	offset = (long)ptep - (long)page_to_virt(start_pte_page);
+	current_pte_page = start_pte_page->next_replica;
+
+	while (current_pte_page != start_pte_page)
+	{
+		if (replicas_seen >= NUMA_NODE_COUNT * 2) {
+			WARN(1, "replicas_seen = %d > NUMA_NODE_COUNT = %d", replicas_seen, NUMA_NODE_COUNT);
+			do_hydra_dump_ll(mm, addr);
+			if (current) {
+				do_send_sig_info(SIGKILL, SEND_SIG_PRIV, current, true);
+			}
+			return;
+		}
+		ptep = (pte_t *)((long)page_to_virt(current_pte_page) + offset);
+		clear_bit(_PAGE_BIT_RW, (unsigned long *)&ptep->pte);
+		current_pte_page = current_pte_page->next_replica;
+		++replicas_seen;
+	}
+
+	return;
+}

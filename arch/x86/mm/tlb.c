@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-only
 #include <linux/init.h>
 
 #include <linux/mm.h>
@@ -10,6 +10,10 @@
 #include <linux/debugfs.h>
 #include <linux/sched/smt.h>
 #include <linux/task_work.h>
+#include <linux/signal.h>
+#include <linux/sched/signal.h>
+#include <linux/hydra_debug.h>
+#include <linux/hydra_util.h>
 
 #include <asm/tlbflush.h>
 #include <asm/mmu_context.h>
@@ -495,6 +499,7 @@ void switch_mm_irqs_off(struct mm_struct *prev, struct mm_struct *next,
 			struct task_struct *tsk)
 {
 	struct mm_struct *real_prev = this_cpu_read(cpu_tlbstate.loaded_mm);
+	pgd_t* next_pgd;
 	u16 prev_asid = this_cpu_read(cpu_tlbstate.loaded_mm_asid);
 	unsigned long new_lam = mm_lam_cr3_mask(next);
 	bool was_lazy = this_cpu_read(cpu_tlbstate_shared.is_lazy);
@@ -525,7 +530,8 @@ void switch_mm_irqs_off(struct mm_struct *prev, struct mm_struct *next,
 	 * Only do this check if CONFIG_DEBUG_VM=y because __read_cr3()
 	 * isn't free.
 	 */
-#ifdef CONFIG_DEBUG_VM
+	// Hydra: disable this check
+#if 0
 	if (WARN_ON_ONCE(__read_cr3() != build_cr3(real_prev->pgd, prev_asid,
 						   tlbstate_lam_cr3_mask()))) {
 		/*
@@ -633,18 +639,28 @@ void switch_mm_irqs_off(struct mm_struct *prev, struct mm_struct *next,
 		/* Let nmi_uaccess_okay() know that we're changing CR3. */
 		this_cpu_write(cpu_tlbstate.loaded_mm, LOADED_MM_SWITCHING);
 		barrier();
+
 	}
 
 	set_tlbstate_lam_mode(next);
+
+		if (next->lazy_repl_enabled) {
+            /* printk("Next pdg use repl[%d]\n", numa_node_id()); */
+			next_pgd = next->repl_pgd[numa_node_id()];
+		} else {
+			next_pgd = next->pgd;
+		}
+
+
 	if (need_flush) {
 		this_cpu_write(cpu_tlbstate.ctxs[new_asid].ctx_id, next->context.ctx_id);
 		this_cpu_write(cpu_tlbstate.ctxs[new_asid].tlb_gen, next_tlb_gen);
-		load_new_mm_cr3(next->pgd, new_asid, new_lam, true);
+		load_new_mm_cr3(next_pgd, new_asid, new_lam, true);
 
 		trace_tlb_flush(TLB_FLUSH_ON_TASK_SWITCH, TLB_FLUSH_ALL);
 	} else {
 		/* The new ASID is already up to date. */
-		load_new_mm_cr3(next->pgd, new_asid, new_lam, false);
+		load_new_mm_cr3(next_pgd, new_asid, new_lam, false);
 
 		trace_tlb_flush(TLB_FLUSH_ON_TASK_SWITCH, 0);
 	}
@@ -899,7 +915,7 @@ done:
 
 static bool tlb_is_not_lazy(int cpu, void *data)
 {
-	return !per_cpu(cpu_tlbstate_shared.is_lazy, cpu);
+    return !per_cpu(cpu_tlbstate_shared.is_lazy, cpu);
 }
 
 DEFINE_PER_CPU_SHARED_ALIGNED(struct tlb_state_shared, cpu_tlbstate_shared);
@@ -932,9 +948,10 @@ STATIC_NOPV void native_flush_tlb_multi(const struct cpumask *cpumask,
 	 */
 	if (info->freed_tables)
 		on_each_cpu_mask(cpumask, flush_tlb_func, (void *)info, true);
-	else
-		on_each_cpu_cond_mask(tlb_is_not_lazy, flush_tlb_func,
-				(void *)info, 1, cpumask);
+	else {
+        on_each_cpu_cond_mask(tlb_is_not_lazy, flush_tlb_func,
+                (void *)info, true, cpumask);
+    }
 }
 
 void flush_tlb_multi(const struct cpumask *cpumask,
@@ -942,6 +959,9 @@ void flush_tlb_multi(const struct cpumask *cpumask,
 {
 	__flush_tlb_multi(cpumask, info);
 }
+
+atomic64_t xx_tlb_total = {0};
+atomic64_t xx_tlb_sent = {0};
 
 /*
  * See Documentation/arch/x86/tlb.rst for details.  We choose 33
@@ -997,17 +1017,21 @@ static void put_flush_tlb_info(void)
 #endif
 }
 
-void flush_tlb_mm_range(struct mm_struct *mm, unsigned long start,
-				unsigned long end, unsigned int stride_shift,
-				bool freed_tables)
+void flush_tlb_mm_node_range(struct mm_struct *mm,
+                unsigned long start, unsigned long end, unsigned int stride_shift,
+				bool freed_tables, nodemask_t *nodemask)
 {
 	struct flush_tlb_info *info;
 	u64 new_tlb_gen;
-	int cpu;
+	int cpu, node;
+	cpumask_t flush_mask;
+	cpumask_t mm_mask;
+	cpumask_clear(&flush_mask);
+	cpumask_clear(&mm_mask);
 
 	cpu = get_cpu();
 
-	/* Should we flush just the requested range? */
+  	/* Should we flush just the requested range? */
 	if ((end == TLB_FLUSH_ALL) ||
 	    ((end - start) >> stride_shift) > tlb_single_page_flush_ceiling) {
 		start = 0;
@@ -1020,13 +1044,26 @@ void flush_tlb_mm_range(struct mm_struct *mm, unsigned long start,
 	info = get_flush_tlb_info(mm, start, end, stride_shift, freed_tables,
 				  new_tlb_gen);
 
+	cpumask_copy(&mm_mask, mm_cpumask(mm));
+
+	if (mm->lazy_repl_enabled && sysctl_hydra_tlbflush_opt && nodemask) {
+		for_each_node_mask(node, *nodemask) {
+			cpumask_or(&flush_mask, &flush_mask, cpumask_of_node(node));
+		}
+		cpumask_and(&flush_mask, &flush_mask, &mm_mask);
+	} else {
+		cpumask_copy(&flush_mask, &mm_mask);
+        /* printk("flush CPU: %ld\n", *cpumask_bits(&flush_mask)); */
+	}
+
+
 	/*
 	 * flush_tlb_multi() is not optimized for the common case in which only
 	 * a local TLB flush is needed. Optimize this use-case by calling
 	 * flush_tlb_func_local() directly in this case.
 	 */
-	if (cpumask_any_but(mm_cpumask(mm), cpu) < nr_cpu_ids) {
-		flush_tlb_multi(mm_cpumask(mm), info);
+	if (cpumask_any_but(&flush_mask, cpu) < nr_cpu_ids) {
+		flush_tlb_multi(&flush_mask, info);
 	} else if (mm == this_cpu_read(cpu_tlbstate.loaded_mm)) {
 		lockdep_assert_irqs_enabled();
 		local_irq_disable();
@@ -1038,6 +1075,26 @@ void flush_tlb_mm_range(struct mm_struct *mm, unsigned long start,
 	put_cpu();
 }
 
+void flush_tlb_mm_range(struct mm_struct *mm, unsigned long start,
+				unsigned long end, unsigned int stride_shift,
+				bool freed_tables) {
+	flush_tlb_mm_node_range(mm, start, end, stride_shift, freed_tables, NULL);
+}
+void flush_tlb_vma_range(struct vm_area_struct *vma, unsigned long start,
+				unsigned long end, unsigned int stride_shift,
+				bool freed_tables) {
+	nodemask_t nodemask;
+	if (vma->vm_mm->lazy_repl_enabled && ((start >> PMD_SHIFT) == (end >> PMD_SHIFT))) {
+		pte_t *pte = hydra_find_pte(vma->vm_mm, start, vma->master_pgd_node);
+		if (!HYDRA_FIND_BAD(pte)) {
+			nodes_clear(nodemask);
+			hydra_calculate_tlbflush_nodemask(virt_to_page(pte), &nodemask);
+	        flush_tlb_mm_node_range(vma->vm_mm, start, end, stride_shift, freed_tables, &nodemask);
+			return;
+		}
+	}
+	flush_tlb_mm_node_range(vma->vm_mm, start, end, stride_shift, freed_tables, NULL);
+}
 
 static void do_flush_tlb_all(void *info)
 {
@@ -1141,6 +1198,7 @@ void flush_tlb_one_kernel(unsigned long addr)
 STATIC_NOPV void native_flush_tlb_one_user(unsigned long addr)
 {
 	u32 loaded_mm_asid = this_cpu_read(cpu_tlbstate.loaded_mm_asid);
+    /* printk("TLBFlush\n"); */
 
 	asm volatile("invlpg (%0)" ::"r" (addr) : "memory");
 
@@ -1342,3 +1400,5 @@ static int __init create_tlb_single_page_flush_ceiling(void)
 	return 0;
 }
 late_initcall(create_tlb_single_page_flush_ceiling);
+
+int sysctl_hydra_tlbflush_opt __read_mostly = 0;
