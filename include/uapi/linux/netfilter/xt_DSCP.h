@@ -11,8 +11,12 @@
 */
 #ifndef _XT_DSCP_TARGET_H
 #define _XT_DSCP_TARGET_H
-#include <linux/netfilter/xt_dscp.h>
+#include <linux/netfilter/xt_DSCP.h>
 #include <linux/types.h>
+
+#define XT_DSCP_MASK	0xfc	/* 11111100 */
+#define XT_DSCP_SHIFT	2
+#define XT_DSCP_MAX	63
 
 /* target info */
 struct xt_DSCP_info {
