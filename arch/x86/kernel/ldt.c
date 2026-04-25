@@ -233,30 +233,58 @@ static pmd_t *pgd_to_pmd_walk(pgd_t *pgd, unsigned long va)
 
 static void map_ldt_struct_to_user(struct mm_struct *mm)
 {
-	pgd_t *k_pgd = pgd_offset(mm, LDT_BASE_ADDR);
-	pgd_t *u_pgd = kernel_to_user_pgdp(k_pgd);
+	pgd_t *k_pgd, *u_pgd;
 	pmd_t *k_pmd, *u_pmd;
 
-	k_pmd = pgd_to_pmd_walk(k_pgd, LDT_BASE_ADDR);
-	u_pmd = pgd_to_pmd_walk(u_pgd, LDT_BASE_ADDR);
+	if (!boot_cpu_has(X86_FEATURE_PTI) || mm->context.ldt)
+		return;
 
-	if (boot_cpu_has(X86_FEATURE_PTI) && !mm->context.ldt)
-		set_pmd(u_pmd, *k_pmd);
+	if (mm->lazy_repl_enabled) {
+		int n;
+		for (n = 0; n < NUMA_NODE_COUNT; n++) {
+			if (!mm->repl_pgd[n])
+				continue;
+			k_pgd = pgd_offset_pgd(mm->repl_pgd[n], LDT_BASE_ADDR);
+			u_pgd = kernel_to_user_pgdp(k_pgd);
+			k_pmd = pgd_to_pmd_walk(k_pgd, LDT_BASE_ADDR);
+			u_pmd = pgd_to_pmd_walk(u_pgd, LDT_BASE_ADDR);
+			if (k_pmd && u_pmd)
+				set_pmd(u_pmd, *k_pmd);
+		}
+	} else {
+		k_pgd = pgd_offset(mm, LDT_BASE_ADDR);
+		u_pgd = kernel_to_user_pgdp(k_pgd);
+		k_pmd = pgd_to_pmd_walk(k_pgd, LDT_BASE_ADDR);
+		u_pmd = pgd_to_pmd_walk(u_pgd, LDT_BASE_ADDR);
+		if (k_pmd && u_pmd)
+			set_pmd(u_pmd, *k_pmd);
+	}
 }
 
 static void sanity_check_ldt_mapping(struct mm_struct *mm)
 {
-	pgd_t *k_pgd = pgd_offset(mm, LDT_BASE_ADDR);
-	pgd_t *u_pgd = kernel_to_user_pgdp(k_pgd);
-	bool had_kernel, had_user;
+	pgd_t *k_pgd, *u_pgd;
 	pmd_t *k_pmd, *u_pmd;
 
-	k_pmd      = pgd_to_pmd_walk(k_pgd, LDT_BASE_ADDR);
-	u_pmd      = pgd_to_pmd_walk(u_pgd, LDT_BASE_ADDR);
-	had_kernel = (k_pmd->pmd != 0);
-	had_user   = (u_pmd->pmd != 0);
-
-	do_sanity_check(mm, had_kernel, had_user);
+	if (mm->lazy_repl_enabled) {
+		int n;
+		for (n = 0; n < NUMA_NODE_COUNT; n++) {
+			if (!mm->repl_pgd[n])
+				continue;
+			k_pgd = pgd_offset_pgd(mm->repl_pgd[n], LDT_BASE_ADDR);
+			u_pgd = kernel_to_user_pgdp(k_pgd);
+			k_pmd = pgd_to_pmd_walk(k_pgd, LDT_BASE_ADDR);
+			u_pmd = pgd_to_pmd_walk(u_pgd, LDT_BASE_ADDR);
+			if (k_pmd && u_pmd)
+				do_sanity_check(mm, k_pmd->pmd != 0, u_pmd->pmd != 0);
+		}
+	} else {
+		k_pgd = pgd_offset(mm, LDT_BASE_ADDR);
+		u_pgd = kernel_to_user_pgdp(k_pgd);
+		k_pmd = pgd_to_pmd_walk(k_pgd, LDT_BASE_ADDR);
+		u_pmd = pgd_to_pmd_walk(u_pgd, LDT_BASE_ADDR);
+		do_sanity_check(mm, k_pmd->pmd != 0, u_pmd->pmd != 0);
+	}
 }
 
 #else /* !CONFIG_X86_PAE */
@@ -323,7 +351,7 @@ map_ldt_struct(struct mm_struct *mm, struct ldt_struct *ldt, int slot)
 		 * get_locked_pte() will allocate all needed pagetables
 		 * and account for them in this mm.
 		 */
-		ptep = get_locked_pte(mm, va, &ptl);
+		ptep = get_locked_pte(mm, va, &ptl, NULL);
 		if (!ptep)
 			return -ENOMEM;
 		/*
@@ -366,7 +394,7 @@ static void unmap_ldt_struct(struct mm_struct *mm, struct ldt_struct *ldt)
 		pte_t *ptep;
 
 		va = (unsigned long)ldt_slot_va(ldt->slot) + offset;
-		ptep = get_locked_pte(mm, va, &ptl);
+		ptep = get_locked_pte(mm, va, &ptl, NULL);
 		pte_clear(mm, va, ptep);
 		pte_unmap_unlock(ptep, ptl);
 	}

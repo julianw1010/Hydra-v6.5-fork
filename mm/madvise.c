@@ -152,7 +152,7 @@ static int madvise_update_vma(struct vm_area_struct *vma,
 	pgoff = vma->vm_pgoff + ((start - vma->vm_start) >> PAGE_SHIFT);
 	*prev = vma_merge(&vmi, mm, *prev, start, end, new_flags,
 			  vma->anon_vma, vma->vm_file, pgoff, vma_policy(vma),
-			  vma->vm_userfaultfd_ctx, anon_name);
+			  vma->vm_userfaultfd_ctx, anon_name, vma->master_pgd_node);
 	if (*prev) {
 		vma = *prev;
 		goto success;
@@ -555,6 +555,7 @@ static long madvise_cold(struct vm_area_struct *vma,
 
 	lru_add_drain();
 	tlb_gather_mmu(&tlb, mm);
+	tlb.vma = vma;
 	madvise_cold_page_range(&tlb, vma, start_addr, end_addr);
 	tlb_finish_mmu(&tlb);
 
@@ -598,6 +599,7 @@ static long madvise_pageout(struct vm_area_struct *vma,
 
 	lru_add_drain();
 	tlb_gather_mmu(&tlb, mm);
+	tlb.vma = vma;
 	madvise_pageout_page_range(&tlb, vma, start_addr, end_addr);
 	tlb_finish_mmu(&tlb);
 
@@ -765,6 +767,7 @@ static int madvise_free_single_vma(struct vm_area_struct *vma,
 
 	lru_add_drain();
 	tlb_gather_mmu(&tlb, mm);
+	tlb.vma = vma;
 	update_hiwater_rss(mm);
 
 	mmu_notifier_invalidate_range_start(&range);

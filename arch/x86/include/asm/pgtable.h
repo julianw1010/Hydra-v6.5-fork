@@ -976,6 +976,8 @@ static inline int pgd_none(pgd_t pgd)
 
 #endif	/* __ASSEMBLY__ */
 
+#define pgd_offset_node(mm, address, node) pgd_offset_pgd((mm)->repl_pgd[(node)], (address))
+
 #define KERNEL_PGD_BOUNDARY	pgd_index(PAGE_OFFSET)
 #define KERNEL_PGD_PTRS		(PTRS_PER_PGD - KERNEL_PGD_BOUNDARY)
 
@@ -1063,39 +1065,25 @@ extern int ptep_clear_flush_young(struct vm_area_struct *vma,
 				  unsigned long address, pte_t *ptep);
 
 #define __HAVE_ARCH_PTEP_GET_AND_CLEAR
-static inline pte_t ptep_get_and_clear(struct mm_struct *mm, unsigned long addr,
-				       pte_t *ptep)
-{
-	pte_t pte = native_ptep_get_and_clear(ptep);
-	page_table_check_pte_clear(mm, addr, pte);
-	return pte;
-}
+pte_t ptep_get_and_clear(struct mm_struct *mm, unsigned long addr,
+				       pte_t *ptep);
 
 #define __HAVE_ARCH_PTEP_GET_AND_CLEAR_FULL
 static inline pte_t ptep_get_and_clear_full(struct mm_struct *mm,
 					    unsigned long addr, pte_t *ptep,
 					    int full)
 {
-	pte_t pte;
-	if (full) {
-		/*
-		 * Full address destruction in progress; paravirt does not
-		 * care about updates and native needs no locking
-		 */
-		pte = native_local_ptep_get_and_clear(ptep);
+	if (full && (!mm || !mm->lazy_repl_enabled)) {
+		pte_t pte = native_ptep_get_and_clear(ptep);
 		page_table_check_pte_clear(mm, addr, pte);
-	} else {
-		pte = ptep_get_and_clear(mm, addr, ptep);
+		return pte;
 	}
-	return pte;
+	return ptep_get_and_clear(mm, addr, ptep);
 }
 
 #define __HAVE_ARCH_PTEP_SET_WRPROTECT
-static inline void ptep_set_wrprotect(struct mm_struct *mm,
-				      unsigned long addr, pte_t *ptep)
-{
-	clear_bit(_PAGE_BIT_RW, (unsigned long *)&ptep->pte);
-}
+void ptep_set_wrprotect(struct mm_struct *mm,
+				      unsigned long addr, pte_t *ptep);
 
 #define flush_tlb_fix_spurious_fault(vma, address, ptep) do { } while (0)
 
@@ -1127,15 +1115,8 @@ static inline int pmd_write(pmd_t pmd)
 }
 
 #define __HAVE_ARCH_PMDP_HUGE_GET_AND_CLEAR
-static inline pmd_t pmdp_huge_get_and_clear(struct mm_struct *mm, unsigned long addr,
-				       pmd_t *pmdp)
-{
-	pmd_t pmd = native_pmdp_get_and_clear(pmdp);
-
-	page_table_check_pmd_clear(mm, addr, pmd);
-
-	return pmd;
-}
+pmd_t pmdp_huge_get_and_clear(struct mm_struct *mm, unsigned long addr,
+			      pmd_t *pmdp);
 
 #define __HAVE_ARCH_PUDP_HUGE_GET_AND_CLEAR
 static inline pud_t pudp_huge_get_and_clear(struct mm_struct *mm,
@@ -1149,11 +1130,8 @@ static inline pud_t pudp_huge_get_and_clear(struct mm_struct *mm,
 }
 
 #define __HAVE_ARCH_PMDP_SET_WRPROTECT
-static inline void pmdp_set_wrprotect(struct mm_struct *mm,
-				      unsigned long addr, pmd_t *pmdp)
-{
-	clear_bit(_PAGE_BIT_RW, (unsigned long *)pmdp);
-}
+void pmdp_set_wrprotect(struct mm_struct *mm,
+			unsigned long addr, pmd_t *pmdp);
 
 #define pud_write pud_write
 static inline int pud_write(pud_t pud)
@@ -1163,17 +1141,12 @@ static inline int pud_write(pud_t pud)
 
 #ifndef pmdp_establish
 #define pmdp_establish pmdp_establish
+pmd_t hydra_pmdp_establish(pmd_t *pmdp, pmd_t pmd);
 static inline pmd_t pmdp_establish(struct vm_area_struct *vma,
 		unsigned long address, pmd_t *pmdp, pmd_t pmd)
 {
 	page_table_check_pmd_set(vma->vm_mm, address, pmdp, pmd);
-	if (IS_ENABLED(CONFIG_SMP)) {
-		return xchg(pmdp, pmd);
-	} else {
-		pmd_t old = *pmdp;
-		WRITE_ONCE(*pmdp, pmd);
-		return old;
-	}
+	return hydra_pmdp_establish(pmdp, pmd);
 }
 #endif
 
@@ -1476,6 +1449,21 @@ static inline bool pud_user_accessible_page(pud_t pud)
 	return pud_leaf(pud) && (pud_val(pud) & _PAGE_PRESENT) && (pud_val(pud) & _PAGE_USER);
 }
 #endif
+
+void pgtable_repl_set_pte(pte_t *ptep, pte_t pteval);
+pte_t pgtable_repl_get_pte(pte_t *ptep);
+void pgtable_repl_set_pte_at(struct mm_struct *mm, unsigned long addr, pte_t *ptep, pte_t pteval);
+
+pmd_t hydra_get_pmd(pmd_t *pmdp);
+
+/* PGD destructor - needed for PGD cache returns */
+void pgd_dtor(pgd_t *pgd);
+
+/* Page table entry tracking wrappers */
+void pgtable_track_set_pmd(pmd_t *pmdp, pmd_t pmd);
+void pgtable_track_set_pud(pud_t *pudp, pud_t pud);
+void pgtable_track_set_p4d(p4d_t *p4dp, p4d_t p4d);
+void pgtable_track_set_pgd(pgd_t *pgdp, pgd_t pgd);
 
 #endif	/* __ASSEMBLY__ */
 

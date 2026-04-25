@@ -31,6 +31,7 @@
 #include <linux/hugetlb.h>
 #include <linux/swapops.h>
 #include <linux/miscdevice.h>
+#include <linux/hydra_util.h>
 
 static int sysctl_unprivileged_userfaultfd __read_mostly;
 
@@ -325,6 +326,7 @@ static inline bool userfaultfd_huge_must_wait(struct userfaultfd_ctx *ctx,
  * threads.
  */
 static inline bool userfaultfd_must_wait(struct userfaultfd_ctx *ctx,
+					 struct vm_area_struct *vma,
 					 unsigned long address,
 					 unsigned long flags,
 					 unsigned long reason)
@@ -339,7 +341,10 @@ static inline bool userfaultfd_must_wait(struct userfaultfd_ctx *ctx,
 
 	mmap_assert_locked(mm);
 
-	pgd = pgd_offset(mm, address);
+	if (mm->lazy_repl_enabled)
+		pgd = pgd_offset_node(mm, address, vma->master_pgd_node);
+	else
+		pgd = pgd_offset(mm, address);
 	if (!pgd_present(*pgd))
 		goto out;
 	p4d = p4d_offset(pgd, address);
@@ -349,14 +354,6 @@ static inline bool userfaultfd_must_wait(struct userfaultfd_ctx *ctx,
 	if (!pud_present(*pud))
 		goto out;
 	pmd = pmd_offset(pud, address);
-	/*
-	 * READ_ONCE must function as a barrier with narrower scope
-	 * and it must be equivalent to:
-	 *	_pmd = *pmd; barrier();
-	 *
-	 * This is to deal with the instability (as in
-	 * pmd_trans_unstable) of the pmd.
-	 */
 	_pmd = READ_ONCE(*pmd);
 	if (pmd_none(_pmd))
 		goto out;
@@ -371,16 +368,7 @@ static inline bool userfaultfd_must_wait(struct userfaultfd_ctx *ctx,
 		goto out;
 	}
 
-	/*
-	 * the pmd is stable (as in !pmd_trans_unstable) so we can re-read it
-	 * and use the standard pte_offset_map() instead of parsing _pmd.
-	 */
 	pte = pte_offset_map(pmd, address);
-	/*
-	 * Lockless access: we're in a wait_event so it's ok if it
-	 * changes under us.  PTE markers should be handled the same as none
-	 * ptes here.
-	 */
 	if (pte_none_mostly(*pte))
 		ret = true;
 	if (!pte_write(*pte) && (reason & VM_UFFD_WP))
@@ -561,7 +549,7 @@ vm_fault_t handle_userfault(struct vm_fault *vmf, unsigned long reason)
 	spin_unlock_irq(&ctx->fault_pending_wqh.lock);
 
 	if (!is_vm_hugetlb_page(vma))
-		must_wait = userfaultfd_must_wait(ctx, vmf->address, vmf->flags,
+		must_wait = userfaultfd_must_wait(ctx, vmf->vma, vmf->address, vmf->flags,
 						  reason);
 	else
 		must_wait = userfaultfd_huge_must_wait(ctx, vma,
@@ -943,7 +931,7 @@ static int userfaultfd_release(struct inode *inode, struct file *file)
 				 new_flags, vma->anon_vma,
 				 vma->vm_file, vma->vm_pgoff,
 				 vma_policy(vma),
-				 NULL_VM_UFFD_CTX, anon_vma_name(vma));
+				 NULL_VM_UFFD_CTX, anon_vma_name(vma), vma->master_pgd_node);
 		if (prev) {
 			vma = prev;
 		} else {
@@ -1490,7 +1478,7 @@ static int userfaultfd_register(struct userfaultfd_ctx *ctx,
 				 vma->anon_vma, vma->vm_file, pgoff,
 				 vma_policy(vma),
 				 ((struct vm_userfaultfd_ctx){ ctx }),
-				 anon_vma_name(vma));
+				 anon_vma_name(vma), vma->master_pgd_node);
 		if (prev) {
 			/* vma_merge() invalidated the mas */
 			vma = prev;
@@ -1674,7 +1662,7 @@ static int userfaultfd_unregister(struct userfaultfd_ctx *ctx,
 		prev = vma_merge(&vmi, mm, prev, start, vma_end, new_flags,
 				 vma->anon_vma, vma->vm_file, pgoff,
 				 vma_policy(vma),
-				 NULL_VM_UFFD_CTX, anon_vma_name(vma));
+				 NULL_VM_UFFD_CTX, anon_vma_name(vma), vma->master_pgd_node);
 		if (prev) {
 			vma = prev;
 			goto next;

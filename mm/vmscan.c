@@ -71,6 +71,8 @@
 #define CREATE_TRACE_POINTS
 #include <trace/events/vmscan.h>
 
+#include <linux/hydra_util.h>
+
 struct scan_control {
 	/* How many pages shrink_list() should reclaim */
 	unsigned long nr_to_reclaim;
@@ -3977,61 +3979,46 @@ static bool walk_pte_range(pmd_t *pmd, unsigned long start, unsigned long end,
 	struct mem_cgroup *memcg = lruvec_memcg(walk->lruvec);
 	struct pglist_data *pgdat = lruvec_pgdat(walk->lruvec);
 	int old_gen, new_gen = lru_gen_from_seq(walk->max_seq);
-
 	VM_WARN_ON_ONCE(pmd_leaf(*pmd));
-
 	ptl = pte_lockptr(args->mm, pmd);
 	if (!spin_trylock(ptl))
 		return false;
-
 	arch_enter_lazy_mmu_mode();
-
 	pte = pte_offset_map(pmd, start & PMD_MASK);
 restart:
 	for (i = pte_index(start), addr = start; addr != end; i++, addr += PAGE_SIZE) {
 		unsigned long pfn;
 		struct folio *folio;
-
+		pte_t ptent = pgtable_repl_get_pte(pte + i);
 		total++;
 		walk->mm_stats[MM_LEAF_TOTAL]++;
-
-		pfn = get_pte_pfn(pte[i], args->vma, addr);
+		pfn = get_pte_pfn(ptent, args->vma, addr);
 		if (pfn == -1)
 			continue;
-
-		if (!pte_young(pte[i])) {
+		if (!pte_young(ptent)) {
 			walk->mm_stats[MM_LEAF_OLD]++;
 			continue;
 		}
-
 		folio = get_pfn_folio(pfn, memcg, pgdat, walk->can_swap);
 		if (!folio)
 			continue;
-
 		if (!ptep_test_and_clear_young(args->vma, addr, pte + i))
 			VM_WARN_ON_ONCE(true);
-
 		young++;
 		walk->mm_stats[MM_LEAF_YOUNG]++;
-
-		if (pte_dirty(pte[i]) && !folio_test_dirty(folio) &&
+		if (pte_dirty(ptent) && !folio_test_dirty(folio) &&
 		    !(folio_test_anon(folio) && folio_test_swapbacked(folio) &&
 		      !folio_test_swapcache(folio)))
 			folio_mark_dirty(folio);
-
 		old_gen = folio_update_gen(folio, new_gen);
 		if (old_gen >= 0 && old_gen != new_gen)
 			update_batch_size(walk, folio, old_gen, new_gen);
 	}
-
 	if (i < PTRS_PER_PTE && get_next_vma(PMD_MASK, PAGE_SIZE, args, &start, &end))
 		goto restart;
-
 	pte_unmap(pte);
-
 	arch_leave_lazy_mmu_mode();
 	spin_unlock(ptl);
-
 	return suitable_to_scan(total, young);
 }
 
@@ -4046,68 +4033,52 @@ static void walk_pmd_range_locked(pud_t *pud, unsigned long addr, struct vm_area
 	struct mem_cgroup *memcg = lruvec_memcg(walk->lruvec);
 	struct pglist_data *pgdat = lruvec_pgdat(walk->lruvec);
 	int old_gen, new_gen = lru_gen_from_seq(walk->max_seq);
-
 	VM_WARN_ON_ONCE(pud_leaf(*pud));
-
-	/* try to batch at most 1+MIN_LRU_BATCH+1 entries */
 	if (*first == -1) {
 		*first = addr;
 		bitmap_zero(bitmap, MIN_LRU_BATCH);
 		return;
 	}
-
 	i = addr == -1 ? 0 : pmd_index(addr) - pmd_index(*first);
 	if (i && i <= MIN_LRU_BATCH) {
 		__set_bit(i - 1, bitmap);
 		return;
 	}
-
 	pmd = pmd_offset(pud, *first);
-
 	ptl = pmd_lockptr(args->mm, pmd);
 	if (!spin_trylock(ptl))
 		goto done;
-
 	arch_enter_lazy_mmu_mode();
-
 	do {
 		unsigned long pfn;
 		struct folio *folio;
-
-		/* don't round down the first address */
+		pmd_t val;
 		addr = i ? (*first & PMD_MASK) + i * PMD_SIZE : *first;
-
-		pfn = get_pmd_pfn(pmd[i], vma, addr);
+		val = hydra_get_pmd(pmd + i);
+		pfn = get_pmd_pfn(val, vma, addr);
 		if (pfn == -1)
 			goto next;
-
-		if (!pmd_trans_huge(pmd[i])) {
+		if (!pmd_trans_huge(val)) {
 			if (arch_has_hw_nonleaf_pmd_young() && get_cap(LRU_GEN_NONLEAF_YOUNG))
 				pmdp_test_and_clear_young(vma, addr, pmd + i);
 			goto next;
 		}
-
 		folio = get_pfn_folio(pfn, memcg, pgdat, walk->can_swap);
 		if (!folio)
 			goto next;
-
 		if (!pmdp_test_and_clear_young(vma, addr, pmd + i))
 			goto next;
-
 		walk->mm_stats[MM_LEAF_YOUNG]++;
-
-		if (pmd_dirty(pmd[i]) && !folio_test_dirty(folio) &&
+		if (pmd_dirty(val) && !folio_test_dirty(folio) &&
 		    !(folio_test_anon(folio) && folio_test_swapbacked(folio) &&
 		      !folio_test_swapcache(folio)))
 			folio_mark_dirty(folio);
-
 		old_gen = folio_update_gen(folio, new_gen);
 		if (old_gen >= 0 && old_gen != new_gen)
 			update_batch_size(walk, folio, old_gen, new_gen);
 next:
 		i = i > MIN_LRU_BATCH ? 0 : find_next_bit(bitmap, MIN_LRU_BATCH, i) + 1;
 	} while (i <= MIN_LRU_BATCH);
-
 	arch_leave_lazy_mmu_mode();
 	spin_unlock(ptl);
 done:
@@ -4131,73 +4102,47 @@ static void walk_pmd_range(pud_t *pud, unsigned long start, unsigned long end,
 	unsigned long bitmap[BITS_TO_LONGS(MIN_LRU_BATCH)];
 	unsigned long first = -1;
 	struct lru_gen_mm_walk *walk = args->private;
-
 	VM_WARN_ON_ONCE(pud_leaf(*pud));
-
-	/*
-	 * Finish an entire PMD in two passes: the first only reaches to PTE
-	 * tables to avoid taking the PMD lock; the second, if necessary, takes
-	 * the PMD lock to clear the accessed bit in PMD entries.
-	 */
 	pmd = pmd_offset(pud, start & PUD_MASK);
 restart:
-	/* walk_pte_range() may call get_next_vma() */
 	vma = args->vma;
 	for (i = pmd_index(start), addr = start; addr != end; i++, addr = next) {
-		pmd_t val = pmdp_get_lockless(pmd + i);
-
+		pmd_t val = hydra_get_pmd(pmd + i);
 		next = pmd_addr_end(addr, end);
-
 		if (!pmd_present(val) || is_huge_zero_pmd(val)) {
 			walk->mm_stats[MM_LEAF_TOTAL]++;
 			continue;
 		}
-
 #ifdef CONFIG_TRANSPARENT_HUGEPAGE
 		if (pmd_trans_huge(val)) {
 			unsigned long pfn = pmd_pfn(val);
 			struct pglist_data *pgdat = lruvec_pgdat(walk->lruvec);
-
 			walk->mm_stats[MM_LEAF_TOTAL]++;
-
 			if (!pmd_young(val)) {
 				walk->mm_stats[MM_LEAF_OLD]++;
 				continue;
 			}
-
-			/* try to avoid unnecessary memory loads */
 			if (pfn < pgdat->node_start_pfn || pfn >= pgdat_end_pfn(pgdat))
 				continue;
-
 			walk_pmd_range_locked(pud, addr, vma, args, bitmap, &first);
 			continue;
 		}
 #endif
 		walk->mm_stats[MM_NONLEAF_TOTAL]++;
-
 		if (arch_has_hw_nonleaf_pmd_young() && get_cap(LRU_GEN_NONLEAF_YOUNG)) {
 			if (!pmd_young(val))
 				continue;
-
 			walk_pmd_range_locked(pud, addr, vma, args, bitmap, &first);
 		}
-
 		if (!walk->force_scan && !test_bloom_filter(walk->lruvec, walk->max_seq, pmd + i))
 			continue;
-
 		walk->mm_stats[MM_NONLEAF_FOUND]++;
-
 		if (!walk_pte_range(&val, addr, next, args))
 			continue;
-
 		walk->mm_stats[MM_NONLEAF_ADDED]++;
-
-		/* carry over to the next generation */
 		update_bloom_filter(walk->lruvec, walk->max_seq + 1, pmd + i);
 	}
-
 	walk_pmd_range_locked(pud, -1, vma, args, bitmap, &first);
-
 	if (i < PTRS_PER_PMD && get_next_vma(PUD_MASK, PMD_SIZE, args, &start, &end))
 		goto restart;
 }

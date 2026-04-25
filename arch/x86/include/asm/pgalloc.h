@@ -9,6 +9,7 @@
 #define __HAVE_ARCH_PTE_ALLOC_ONE
 #define __HAVE_ARCH_PGD_FREE
 #include <asm-generic/pgalloc.h>
+#include <linux/page-flags.h>
 
 static inline int  __paravirt_pgd_alloc(struct mm_struct *mm) { return 0; }
 
@@ -49,9 +50,13 @@ extern gfp_t __userpte_alloc_gfp;
  * Allocate and free page tables.
  */
 extern pgd_t *pgd_alloc(struct mm_struct *);
+extern pgd_t *repl_pgd_alloc(struct mm_struct *, size_t node_id);
 extern void pgd_free(struct mm_struct *mm, pgd_t *pgd);
 
 extern pgtable_t pte_alloc_one(struct mm_struct *);
+extern pgtable_t repl_pte_alloc_one(struct mm_struct *, unsigned long, size_t node_id);
+
+extern struct page *repl_alloc_page_on_node(size_t nid, unsigned int order);
 
 extern void ___pte_free_tlb(struct mmu_gather *tlb, struct page *pte);
 
@@ -79,12 +84,15 @@ static inline void pmd_populate(struct mm_struct *mm, pmd_t *pmd,
 				struct page *pte)
 {
 	unsigned long pfn = page_to_pfn(pte);
-
+	
 	paravirt_alloc_pte(mm, pfn);
 	set_pmd(pmd, __pmd(((pteval_t)pfn << PAGE_SHIFT) | _PAGE_TABLE));
 }
 
 #if CONFIG_PGTABLE_LEVELS > 2
+
+extern pmd_t *repl_pmd_alloc_one(struct mm_struct *mm, unsigned long addr, size_t nid);
+
 extern void ___pmd_free_tlb(struct mmu_gather *tlb, pmd_t *pmd);
 
 static inline void __pmd_free_tlb(struct mmu_gather *tlb, pmd_t *pmd,
@@ -122,6 +130,8 @@ static inline void p4d_populate_safe(struct mm_struct *mm, p4d_t *p4d, pud_t *pu
 	set_p4d_safe(p4d, __p4d(_PAGE_TABLE | __pa(pud)));
 }
 
+extern pud_t *repl_pud_alloc_one(struct mm_struct *mm, unsigned long addr, size_t nid);
+
 extern void ___pud_free_tlb(struct mmu_gather *tlb, pud_t *pud);
 
 static inline void __pud_free_tlb(struct mmu_gather *tlb, pud_t *pud,
@@ -149,19 +159,34 @@ static inline void pgd_populate_safe(struct mm_struct *mm, pgd_t *pgd, p4d_t *p4
 
 static inline p4d_t *p4d_alloc_one(struct mm_struct *mm, unsigned long addr)
 {
+	struct page *page;
 	gfp_t gfp = GFP_KERNEL_ACCOUNT;
 
 	if (mm == &init_mm)
 		gfp &= ~__GFP_ACCOUNT;
-	return (p4d_t *)get_zeroed_page(gfp);
+
+	page = hydra_alloc_pt_page(mm, gfp | __GFP_ZERO, 0);
+	if (!page)
+		return NULL;
+
+	return (p4d_t *)page_address(page);
 }
+
+extern p4d_t *repl_p4d_alloc_one(struct mm_struct *mm, unsigned long addr, size_t nid);
 
 static inline void p4d_free(struct mm_struct *mm, p4d_t *p4d)
 {
+	struct page *page;
+
 	if (!pgtable_l5_enabled())
 		return;
 
-	BUG_ON((unsigned long)p4d & (PAGE_SIZE-1));
+	BUG_ON((unsigned long)p4d & (PAGE_SIZE - 1));
+	page = virt_to_page(p4d);
+
+	if (hydra_try_return_page(page))
+		return;
+
 	free_page((unsigned long)p4d);
 }
 

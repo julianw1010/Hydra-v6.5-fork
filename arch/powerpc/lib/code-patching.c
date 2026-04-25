@@ -171,7 +171,7 @@ static int text_area_cpu_up_mm(unsigned int cpu)
 	 * Using get_locked_pte() to avoid open coding, the lock
 	 * is unnecessary.
 	 */
-	pte = get_locked_pte(mm, addr, &ptl);
+	pte = get_locked_pte(mm, addr, &ptl, NULL);
 	if (!pte)
 		goto fail_no_pte;
 	pte_unmap_unlock(pte, ptl);
@@ -293,7 +293,7 @@ static int __do_patch_instruction_mm(u32 *addr, ppc_inst_t instr)
 	text_poke_addr = __this_cpu_read(cpu_patching_context.addr);
 	patch_addr = (u32 *)(text_poke_addr + offset_in_page(addr));
 
-	pte = get_locked_pte(patching_mm, text_poke_addr, &ptl);
+	pte = get_locked_pte(patching_mm, text_poke_addr, &ptl, NULL);
 	if (!pte)
 		return -ENOMEM;
 

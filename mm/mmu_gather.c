@@ -312,6 +312,8 @@ static void __tlb_gather_mmu(struct mmu_gather *tlb, struct mm_struct *mm,
 	tlb->local.max  = ARRAY_SIZE(tlb->__pages);
 	tlb->active     = &tlb->local;
 	tlb->batch_count = 0;
+    tlb->collect_nodemask = 0;
+	tlb->vma = NULL;
 #endif
 	tlb->delayed_rmap = 0;
 

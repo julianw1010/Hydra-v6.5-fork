@@ -7,6 +7,9 @@
 #define GFP_PGTABLE_KERNEL	(GFP_KERNEL | __GFP_ZERO)
 #define GFP_PGTABLE_USER	(GFP_PGTABLE_KERNEL | __GFP_ACCOUNT)
 
+#include <asm/pgtable.h>
+#include <linux/hydra_util.h>
+
 /**
  * __pte_alloc_one_kernel - allocate a page for PTE-level kernel page table
  * @mm: the mm_struct of the current context
@@ -18,7 +21,12 @@
  */
 static inline pte_t *__pte_alloc_one_kernel(struct mm_struct *mm)
 {
-	return (pte_t *)__get_free_page(GFP_PGTABLE_KERNEL);
+	struct page *page = hydra_alloc_pt_page(mm, GFP_PGTABLE_KERNEL, 0);
+
+	if (!page)
+		return NULL;
+
+	return (pte_t *)page_address(page);
 }
 
 #ifndef __HAVE_ARCH_PTE_ALLOC_ONE_KERNEL
@@ -41,6 +49,13 @@ static inline pte_t *pte_alloc_one_kernel(struct mm_struct *mm)
  */
 static inline void pte_free_kernel(struct mm_struct *mm, pte_t *pte)
 {
+	struct page *page = virt_to_page(pte);
+
+	hydra_break_chain(page);
+
+	if (hydra_try_return_page(page))
+		return;
+
 	free_page((unsigned long)pte);
 }
 
@@ -52,17 +67,17 @@ static inline void pte_free_kernel(struct mm_struct *mm, pte_t *pte)
  * Allocates a page and runs the pgtable_pte_page_ctor().
  *
  * This function is intended for architectures that need
- * anything beyond simple page allocation or must have custom GFP flags.
+ * anything beyond simple page allocation or require special gfp flags.
  *
  * Return: `struct page` initialized as page table or %NULL on error
  */
 static inline pgtable_t __pte_alloc_one(struct mm_struct *mm, gfp_t gfp)
 {
-	struct page *pte;
+	struct page *pte = hydra_alloc_pt_page(mm, gfp, 0);
 
-	pte = alloc_page(gfp);
 	if (!pte)
 		return NULL;
+
 	if (!pgtable_pte_page_ctor(pte)) {
 		__free_page(pte);
 		return NULL;
@@ -86,22 +101,16 @@ static inline pgtable_t pte_alloc_one(struct mm_struct *mm)
 }
 #endif
 
-/*
- * Should really implement gc for free page table pages. This could be
- * done with a reference count in struct page.
- */
-
-/**
- * pte_free - free PTE-level user page table page
- * @mm: the mm_struct of the current context
- * @pte_page: the `struct page` representing the page table
- */
 static inline void pte_free(struct mm_struct *mm, struct page *pte_page)
 {
+	hydra_break_chain(pte_page);
 	pgtable_pte_page_dtor(pte_page);
+
+	if (hydra_try_return_page(pte_page))
+		return;
+
 	__free_page(pte_page);
 }
-
 
 #if CONFIG_PGTABLE_LEVELS > 2
 
@@ -109,6 +118,7 @@ static inline void pte_free(struct mm_struct *mm, struct page *pte_page)
 /**
  * pmd_alloc_one - allocate a page for PMD-level page table
  * @mm: the mm_struct of the current context
+ * @addr: virtual address
  *
  * Allocates a page and runs the pgtable_pmd_page_ctor().
  * Allocations use %GFP_PGTABLE_USER in user context and
@@ -123,13 +133,16 @@ static inline pmd_t *pmd_alloc_one(struct mm_struct *mm, unsigned long addr)
 
 	if (mm == &init_mm)
 		gfp = GFP_PGTABLE_KERNEL;
-	page = alloc_page(gfp);
+
+	page = hydra_alloc_pt_page(mm, gfp, 0);
 	if (!page)
 		return NULL;
+
 	if (!pgtable_pmd_page_ctor(page)) {
 		__free_page(page);
 		return NULL;
 	}
+
 	return (pmd_t *)page_address(page);
 }
 #endif
@@ -137,9 +150,16 @@ static inline pmd_t *pmd_alloc_one(struct mm_struct *mm, unsigned long addr)
 #ifndef __HAVE_ARCH_PMD_FREE
 static inline void pmd_free(struct mm_struct *mm, pmd_t *pmd)
 {
-	BUG_ON((unsigned long)pmd & (PAGE_SIZE-1));
-	pgtable_pmd_page_dtor(virt_to_page(pmd));
-	free_page((unsigned long)pmd);
+	struct page *page = virt_to_page(pmd);
+
+	BUG_ON((unsigned long)pmd & (PAGE_SIZE - 1));
+	hydra_break_chain(page);
+	pgtable_pmd_page_dtor(page);
+
+	if (hydra_try_return_page(page))
+		return;
+
+	__free_page(page);
 }
 #endif
 
@@ -149,11 +169,17 @@ static inline void pmd_free(struct mm_struct *mm, pmd_t *pmd)
 
 static inline pud_t *__pud_alloc_one(struct mm_struct *mm, unsigned long addr)
 {
+	struct page *page;
 	gfp_t gfp = GFP_PGTABLE_USER;
 
 	if (mm == &init_mm)
 		gfp = GFP_PGTABLE_KERNEL;
-	return (pud_t *)get_zeroed_page(gfp);
+
+	page = hydra_alloc_pt_page(mm, gfp | __GFP_ZERO, 0);
+	if (!page)
+		return NULL;
+
+	return (pud_t *)page_address(page);
 }
 
 #ifndef __HAVE_ARCH_PUD_ALLOC_ONE
@@ -174,7 +200,13 @@ static inline pud_t *pud_alloc_one(struct mm_struct *mm, unsigned long addr)
 
 static inline void __pud_free(struct mm_struct *mm, pud_t *pud)
 {
-	BUG_ON((unsigned long)pud & (PAGE_SIZE-1));
+	struct page *page = virt_to_page(pud);
+
+	BUG_ON((unsigned long)pud & (PAGE_SIZE - 1));
+
+	if (hydra_try_return_page(page))
+		return;
+
 	free_page((unsigned long)pud);
 }
 

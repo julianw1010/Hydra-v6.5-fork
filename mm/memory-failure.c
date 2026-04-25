@@ -397,7 +397,7 @@ static unsigned long dev_pagemap_mapping_shift(struct vm_area_struct *vma,
 	pte_t *pte;
 
 	VM_BUG_ON_VMA(address == -EFAULT, vma);
-	pgd = pgd_offset(vma->vm_mm, address);
+        pgd = vma->vm_mm->lazy_repl_enabled ? pgd_offset_node(vma->vm_mm, address, vma->master_pgd_node) : pgd_offset(vma->vm_mm, address);
 	if (!pgd_present(*pgd))
 		return 0;
 	p4d = p4d_offset(pgd, address);

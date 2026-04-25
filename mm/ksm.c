@@ -1186,7 +1186,7 @@ static int replace_page(struct vm_area_struct *vma, struct page *page,
 	if (addr == -EFAULT)
 		goto out;
 
-	pmd = mm_find_pmd(mm, addr);
+	pmd = mm_find_pmd(mm, vma, addr);
 	if (!pmd)
 		goto out;
 	/*

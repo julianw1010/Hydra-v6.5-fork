@@ -420,7 +420,7 @@ static int mlock_fixup(struct vma_iterator *vmi, struct vm_area_struct *vma,
 	pgoff = vma->vm_pgoff + ((start - vma->vm_start) >> PAGE_SHIFT);
 	*prev = vma_merge(vmi, mm, *prev, start, end, newflags,
 			vma->anon_vma, vma->vm_file, pgoff, vma_policy(vma),
-			vma->vm_userfaultfd_ctx, anon_vma_name(vma));
+			vma->vm_userfaultfd_ctx, anon_vma_name(vma), vma->master_pgd_node);
 	if (*prev) {
 		vma = *prev;
 		goto success;

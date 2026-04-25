@@ -51,7 +51,10 @@
 #include <linux/uaccess.h>
 #include <asm/cacheflush.h>
 #include <asm/tlb.h>
+#include <asm/tlbflush.h>
 #include <asm/mmu_context.h>
+
+#include <linux/hydra_util.h>
 
 #define CREATE_TRACE_POINTS
 #include <trace/events/mmap.h>
@@ -813,10 +816,17 @@ static inline bool is_mergeable_anon_vma(struct anon_vma *anon_vma1,
  */
 static bool
 can_vma_merge_before(struct vm_area_struct *vma, unsigned long vm_flags,
-		struct anon_vma *anon_vma, struct file *file,
-		pgoff_t vm_pgoff, struct vm_userfaultfd_ctx vm_userfaultfd_ctx,
-		struct anon_vma_name *anon_name)
+		     struct anon_vma *anon_vma, struct file *file,
+		     pgoff_t vm_pgoff, struct vm_userfaultfd_ctx vm_userfaultfd_ctx,
+		     struct anon_vma_name *anon_name,
+		     unsigned long new_master_pgd_node)
 {
+	struct mm_struct *mm = vma->vm_mm;
+
+	if (mm->lazy_repl_enabled &&
+	    vma->master_pgd_node != new_master_pgd_node)
+		return false;
+
 	if (is_mergeable_vma(vma, file, vm_flags, vm_userfaultfd_ctx, anon_name, true) &&
 	    is_mergeable_anon_vma(anon_vma, vma->anon_vma, vma)) {
 		if (vma->vm_pgoff == vm_pgoff)
@@ -836,10 +846,17 @@ can_vma_merge_before(struct vm_area_struct *vma, unsigned long vm_flags,
  */
 static bool
 can_vma_merge_after(struct vm_area_struct *vma, unsigned long vm_flags,
-		struct anon_vma *anon_vma, struct file *file,
-		pgoff_t vm_pgoff, struct vm_userfaultfd_ctx vm_userfaultfd_ctx,
-		struct anon_vma_name *anon_name)
+		    struct anon_vma *anon_vma, struct file *file,
+		    pgoff_t vm_pgoff, struct vm_userfaultfd_ctx vm_userfaultfd_ctx,
+		    struct anon_vma_name *anon_name,
+		    unsigned long new_master_pgd_node)
 {
+	struct mm_struct *mm = vma->vm_mm;
+
+	if (mm->lazy_repl_enabled &&
+	    vma->master_pgd_node != new_master_pgd_node)
+		return false;
+
 	if (is_mergeable_vma(vma, file, vm_flags, vm_userfaultfd_ctx, anon_name, false) &&
 	    is_mergeable_anon_vma(anon_vma, vma->anon_vma, vma)) {
 		pgoff_t vm_pglen;
@@ -849,6 +866,7 @@ can_vma_merge_after(struct vm_area_struct *vma, unsigned long vm_flags,
 	}
 	return false;
 }
+
 
 /*
  * Given a mapping request (addr,end,vm_flags,file,pgoff,anon_name),
@@ -908,7 +926,8 @@ struct vm_area_struct *vma_merge(struct vma_iterator *vmi, struct mm_struct *mm,
 			struct anon_vma *anon_vma, struct file *file,
 			pgoff_t pgoff, struct mempolicy *policy,
 			struct vm_userfaultfd_ctx vm_userfaultfd_ctx,
-			struct anon_vma_name *anon_name)
+			struct anon_vma_name *anon_name,
+			unsigned long master_pgd_node)
 {
 	struct vm_area_struct *curr, *next, *res;
 	struct vm_area_struct *vma, *adjust, *remove, *remove2;
@@ -947,7 +966,8 @@ struct vm_area_struct *vma_merge(struct vma_iterator *vmi, struct mm_struct *mm,
 		/* Can we merge the predecessor? */
 		if (addr == prev->vm_end && mpol_equal(vma_policy(prev), policy)
 		    && can_vma_merge_after(prev, vm_flags, anon_vma, file,
-					   pgoff, vm_userfaultfd_ctx, anon_name)) {
+					   pgoff, vm_userfaultfd_ctx, anon_name,
+					   master_pgd_node)) {
 			merge_prev = true;
 			vma_prev(vmi);
 		}
@@ -956,7 +976,8 @@ struct vm_area_struct *vma_merge(struct vma_iterator *vmi, struct mm_struct *mm,
 	/* Can we merge the successor? */
 	if (next && mpol_equal(policy, vma_policy(next)) &&
 	    can_vma_merge_before(next, vm_flags, anon_vma, file, pgoff+pglen,
-				 vm_userfaultfd_ctx, anon_name)) {
+				 vm_userfaultfd_ctx, anon_name,
+				 master_pgd_node)) {
 		merge_next = true;
 	}
 
@@ -1392,6 +1413,43 @@ unsigned long do_mmap(struct file *file, unsigned long addr,
 	}
 
 	addr = mmap_region(file, addr, len, vm_flags, pgoff, uf);
+	if (!IS_ERR_VALUE(addr) && mm->lazy_repl_enabled) {
+		unsigned long vma_end = addr + len;
+		unsigned long pud_addr;
+
+		for (pud_addr = addr & ~(PUD_SIZE - 1);
+		     pud_addr < vma_end;
+		     pud_addr += PUD_SIZE) {
+
+			unsigned long pud_end = pud_addr + PUD_SIZE;
+			long needed = -1;
+			struct vm_area_struct *near, *piece;
+
+			near = find_vma(mm, pud_addr);
+			while (near && near->vm_start < pud_end) {
+				if (near->vm_end <= addr || near->vm_start >= vma_end) {
+					needed = near->master_pgd_node;
+					break;
+				}
+				near = find_vma(mm, near->vm_end);
+			}
+
+			if (needed < 0)
+				continue;
+
+			piece = find_vma(mm, max(pud_addr, addr));
+			if (!piece || piece->vm_start > max(pud_addr, addr))
+				continue;
+
+			if (piece->vm_end > pud_end && pud_end < vma_end) {
+				VMA_ITERATOR(vmi, mm, pud_end);
+				if (__split_vma(&vmi, piece, pud_end, 0))
+					break;
+			}
+
+			piece->master_pgd_node = needed;
+		}
+	}
 	if (!IS_ERR_VALUE(addr) &&
 	    ((vm_flags & VM_LOCKED) ||
 	     (flags & (MAP_POPULATE | MAP_NONBLOCK)) == MAP_POPULATE))
@@ -2214,6 +2272,10 @@ static void unmap_region(struct mm_struct *mm, struct maple_tree *mt,
 
 	lru_add_drain();
 	tlb_gather_mmu(&tlb, mm);
+	if (mm->lazy_repl_enabled && sysctl_hydra_tlbflush_opt) {
+		tlb.collect_nodemask = 1;
+		nodes_clear(tlb.nodemask);
+	}
 	update_hiwater_rss(mm);
 	unmap_vmas(&tlb, mt, vma, start, end, mm_wr_locked);
 	free_pgtables(&tlb, mt, vma, prev ? prev->vm_end : FIRST_USER_ADDRESS,
@@ -2233,6 +2295,7 @@ int __split_vma(struct vma_iterator *vmi, struct vm_area_struct *vma,
 	struct vma_prepare vp;
 	struct vm_area_struct *new;
 	int err;
+	unsigned long owner_node = vma->master_pgd_node;
 
 	validate_mm_mt(vma->vm_mm);
 
@@ -2248,6 +2311,14 @@ int __split_vma(struct vma_iterator *vmi, struct vm_area_struct *vma,
 	new = vm_area_dup(vma);
 	if (!new)
 		return -ENOMEM;
+
+        /*
+	 * Explicitly preserve the owner node from the original VMA.
+	 * vm_area_dup() already copies this, but we make it explicit:
+	 * splitting a VMA doesn't change who originally allocated it.
+	 * Both resulting VMAs retain the same owner.
+	 */
+	new->master_pgd_node = owner_node;
 
 	err = -ENOMEM;
 	if (vma_iter_prealloc(vmi))
@@ -2552,6 +2623,7 @@ unsigned long mmap_region(struct file *file, unsigned long addr,
 	unsigned long charged = 0;
 	unsigned long end = addr + len;
 	unsigned long merge_start = addr, merge_end = end;
+	unsigned long master_node = numa_node_id();
 	pgoff_t vm_pgoff;
 	int error;
 	VMA_ITERATOR(vmi, mm, addr);
@@ -2594,7 +2666,7 @@ unsigned long mmap_region(struct file *file, unsigned long addr,
 	/* Check next */
 	if (next && next->vm_start == end && !vma_policy(next) &&
 	    can_vma_merge_before(next, vm_flags, NULL, file, pgoff+pglen,
-				 NULL_VM_UFFD_CTX, NULL)) {
+				 NULL_VM_UFFD_CTX, NULL, master_node)) {
 		merge_end = next->vm_end;
 		vma = next;
 		vm_pgoff = next->vm_pgoff - pglen;
@@ -2603,9 +2675,9 @@ unsigned long mmap_region(struct file *file, unsigned long addr,
 	/* Check prev */
 	if (prev && prev->vm_end == addr && !vma_policy(prev) &&
 	    (vma ? can_vma_merge_after(prev, vm_flags, vma->anon_vma, file,
-				       pgoff, vma->vm_userfaultfd_ctx, NULL) :
+				       pgoff, vma->vm_userfaultfd_ctx, NULL, master_node) :
 		   can_vma_merge_after(prev, vm_flags, NULL, file, pgoff,
-				       NULL_VM_UFFD_CTX, NULL))) {
+				       NULL_VM_UFFD_CTX, NULL, master_node))) {
 		merge_start = prev->vm_start;
 		vma = prev;
 		vm_pgoff = prev->vm_pgoff;
@@ -2637,7 +2709,7 @@ cannot_expand:
 	vm_flags_init(vma, vm_flags);
 	vma->vm_page_prot = vm_get_page_prot(vm_flags);
 	vma->vm_pgoff = pgoff;
-
+	
 	if (file) {
 		if (vm_flags & VM_SHARED) {
 			error = mapping_map_writable(file->f_mapping);
@@ -2667,7 +2739,7 @@ cannot_expand:
 			merge = vma_merge(&vmi, mm, prev, vma->vm_start,
 				    vma->vm_end, vma->vm_flags, NULL,
 				    vma->vm_file, vma->vm_pgoff, NULL,
-				    NULL_VM_UFFD_CTX, NULL);
+				    NULL_VM_UFFD_CTX, NULL, master_node);
 			if (merge) {
 				/*
 				 * ->mmap() can change vma->vm_file and fput
@@ -2974,9 +3046,9 @@ static int do_brk_flags(struct vma_iterator *vmi, struct vm_area_struct *vma,
 	 * Expand the existing vma if possible; Note that singular lists do not
 	 * occur after forking, so the expand will only happen on new VMAs.
 	 */
-	if (vma && vma->vm_end == addr && !vma_policy(vma) &&
-	    can_vma_merge_after(vma, flags, NULL, NULL,
-				addr >> PAGE_SHIFT, NULL_VM_UFFD_CTX, NULL)) {
+        if (vma && vma->vm_end == addr && !vma_policy(vma) &&
+            can_vma_merge_after(vma, flags, NULL, NULL,
+                        addr >> PAGE_SHIFT, NULL_VM_UFFD_CTX, NULL, vma->master_pgd_node)) {
 		if (vma_iter_prealloc(vmi))
 			goto unacct_fail;
 
@@ -3078,6 +3150,66 @@ int vm_brk(unsigned long addr, unsigned long len)
 }
 EXPORT_SYMBOL(vm_brk);
 
+static void hydra_unlink_all_replica_chains(struct mm_struct *mm)
+{
+	unsigned long addr, next_pgd, next_p4d, next_pud, next_pmd;
+	pgd_t *pgd;
+	p4d_t *p4d;
+	pud_t *pud;
+	pmd_t *pmd;
+	pte_t *pte;
+	int node;
+
+	for (node = 0; node < NUMA_NODE_COUNT; node++) {
+		if (!mm->repl_pgd[node])
+			continue;
+
+		addr = 0;
+		pgd = mm->repl_pgd[node];
+
+		do {
+			next_pgd = pgd_addr_end(addr, TASK_SIZE);
+			if (pgd_none(*pgd) || pgd_bad(*pgd))
+				goto next_pgd;
+
+			p4d = p4d_offset(pgd, addr);
+			do {
+				next_p4d = p4d_addr_end(addr, next_pgd);
+				if (p4d_none(*p4d) || p4d_bad(*p4d))
+					goto next_p4d;
+
+				pud = pud_offset(p4d, addr);
+				do {
+					next_pud = pud_addr_end(addr, next_p4d);
+					if (pud_none(*pud) || pud_bad(*pud))
+						goto next_pud;
+
+					pmd = pmd_offset(pud, addr);
+                                        hydra_break_chain(virt_to_page(pmd));
+
+					do {
+						next_pmd = pmd_addr_end(addr, next_pud);
+						if (pmd_none(*pmd) || pmd_trans_huge(*pmd) || pmd_bad(*pmd))
+							goto next_pmd;
+
+						pte = pte_offset_kernel(pmd, addr);
+                                                hydra_break_chain(virt_to_page(pte));
+
+next_pmd:
+						addr = next_pmd;
+					} while (pmd++, addr != next_pud);
+next_pud:
+					addr = next_pud;
+				} while (pud++, addr != next_p4d);
+next_p4d:
+				addr = next_p4d;
+			} while (p4d++, addr != next_pgd);
+next_pgd:
+			addr = next_pgd;
+		} while (pgd++, addr != TASK_SIZE);
+	}
+}
+
 /* Release all mmaps. */
 void exit_mmap(struct mm_struct *mm)
 {
@@ -3085,7 +3217,8 @@ void exit_mmap(struct mm_struct *mm)
 	struct vm_area_struct *vma;
 	unsigned long nr_accounted = 0;
 	MA_STATE(mas, &mm->mm_mt, 0, 0);
-	int count = 0;
+	int count = 0, i;
+	extern void hydra_free_pgd_tree(struct mmu_gather *tlb, pgd_t *pgd_base);
 
 	/* mm's last user has gone, and its about to be pulled down */
 	mmu_notifier_release(mm);
@@ -3103,9 +3236,16 @@ void exit_mmap(struct mm_struct *mm)
 	lru_add_drain();
 	flush_cache_mm(mm);
 	tlb_gather_mmu_fullmm(&tlb, mm);
+	
 	/* update_hiwater_rss(mm) here? but nobody should be looking */
 	/* Use ULONG_MAX here to ensure all VMAs in the mm are unmapped */
-	unmap_vmas(&tlb, &mm->mm_mt, vma, 0, ULONG_MAX, false);
+	unmap_vmas(&tlb, &mm->mm_mt, vma, 0, ULONG_MAX, false);	
+			
+	if (mm->lazy_repl_enabled) {
+		hydra_unlink_all_replica_chains(mm);
+		hydra_drain_deferred_pages(mm);
+	}
+	
 	mmap_read_unlock(mm);
 
 	/*
@@ -3115,8 +3255,26 @@ void exit_mmap(struct mm_struct *mm)
 	set_bit(MMF_OOM_SKIP, &mm->flags);
 	mmap_write_lock(mm);
 	mt_clear_in_rcu(&mm->mm_mt);
-	free_pgtables(&tlb, &mm->mm_mt, vma, FIRST_USER_ADDRESS,
-		      USER_PGTABLES_CEILING, true);
+
+	if (mm->lazy_repl_enabled) {
+		struct vm_area_struct *v = vma;
+		MA_STATE(mas2, &mm->mm_mt, 0, 0);
+		mas_set(&mas2, vma->vm_start);
+		mas_for_each(&mas2, v, ULONG_MAX) {
+			vma_start_write(v);
+			unlink_anon_vmas(v);
+			unlink_file_vma(v);
+		}
+		for (i = 0; i < NUMA_NODE_COUNT; i++) {
+			if (!mm->repl_pgd[i])
+				continue;
+			hydra_free_pgd_tree(&tlb, mm->repl_pgd[i]);
+		}
+	} else {
+		free_pgtables(&tlb, &mm->mm_mt, vma, FIRST_USER_ADDRESS,
+			      USER_PGTABLES_CEILING, true);
+	}	
+		      
 	tlb_finish_mmu(&tlb);
 
 	/*
@@ -3195,6 +3353,7 @@ struct vm_area_struct *copy_vma(struct vm_area_struct **vmap,
 	struct vm_area_struct *new_vma, *prev;
 	bool faulted_in_anon_vma = true;
 	VMA_ITERATOR(vmi, mm, addr);
+	unsigned long owner_node = vma->master_pgd_node;
 
 	validate_mm_mt(mm);
 	/*
@@ -3212,7 +3371,7 @@ struct vm_area_struct *copy_vma(struct vm_area_struct **vmap,
 
 	new_vma = vma_merge(&vmi, mm, prev, addr, addr + len, vma->vm_flags,
 			    vma->anon_vma, vma->vm_file, pgoff, vma_policy(vma),
-			    vma->vm_userfaultfd_ctx, anon_vma_name(vma));
+			    vma->vm_userfaultfd_ctx, anon_vma_name(vma), vma->master_pgd_node);
 	if (new_vma) {
 		/*
 		 * Source vma may have been merged into new_vma
@@ -3251,6 +3410,13 @@ struct vm_area_struct *copy_vma(struct vm_area_struct **vmap,
 		if (new_vma->vm_ops && new_vma->vm_ops->open)
 			new_vma->vm_ops->open(new_vma);
 		vma_start_write(new_vma);
+                /*
+		 * Preserve the owner node from the source VMA.
+		 * vm_area_dup() already copies this, but we make it
+		 * explicit for mremap semantics: moving a mapping
+		 * doesn't change who originally allocated it.
+		 */
+		new_vma->master_pgd_node = owner_node;
 		if (vma_link(mm, new_vma))
 			goto out_vma_link;
 		*need_rmap_locks = false;

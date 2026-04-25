@@ -196,7 +196,7 @@ extern void reclaim_throttle(pg_data_t *pgdat, enum vmscan_throttle_state reason
 /*
  * in mm/rmap.c:
  */
-pmd_t *mm_find_pmd(struct mm_struct *mm, unsigned long address);
+pmd_t *mm_find_pmd(struct mm_struct *mm, struct vm_area_struct *vma, unsigned long address);
 
 /*
  * in mm/page_alloc.c

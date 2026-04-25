@@ -4790,6 +4790,10 @@ out:
 	trace_mm_page_alloc(page, order, alloc_gfp, ac.migratetype);
 	kmsan_alloc_page(page, order, alloc_gfp);
 
+	if (page) page->next_replica = NULL;
+	if (page) page->pt_owner_mm = NULL;
+	if (page) page->mitosis_tracking = NULL;
+
 	return page;
 }
 EXPORT_SYMBOL(__alloc_pages);
@@ -4853,6 +4857,12 @@ void __free_pages(struct page *page, unsigned int order)
 	/* get PageHead before we drop reference */
 	int head = PageHead(page);
 
+	page->next_replica = NULL;
+	page->pt_owner_mm = NULL;
+	if (page->mitosis_tracking) {
+		kfree(page->mitosis_tracking);
+		page->mitosis_tracking = NULL;
+	}
 	if (put_page_testzero(page))
 		free_the_page(page, order);
 	else if (!head)

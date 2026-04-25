@@ -800,7 +800,7 @@ static struct page *follow_page_mask(struct vm_area_struct *vma,
 		return page;
 	}
 
-	pgd = pgd_offset(mm, address);
+	pgd = mm->lazy_repl_enabled ? pgd_offset_node(mm, address, vma->master_pgd_node) : pgd_offset(mm, address);
 
 	if (pgd_none(*pgd) || unlikely(pgd_bad(*pgd)))
 		return no_page_table(vma, flags);
@@ -2903,6 +2903,9 @@ static unsigned long lockless_pages_from_mm(unsigned long start,
 	unsigned long flags;
 	int nr_pinned = 0;
 	unsigned seq;
+	
+	if (current->mm->lazy_repl_enabled)
+		return 0;
 
 	if (!IS_ENABLED(CONFIG_HAVE_FAST_GUP) ||
 	    !gup_fast_permitted(start, end))

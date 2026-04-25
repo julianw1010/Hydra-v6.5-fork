@@ -189,8 +189,8 @@ arch_get_unmapped_area_topdown(struct file *filp, const unsigned long addr0,
 		if (!vma || addr + len <= vm_start_gap(vma))
 			return addr;
 	}
-get_unmapped_area:
 
+get_unmapped_area:
 	info.flags = VM_UNMAPPED_AREA_TOPDOWN;
 	info.length = len;
 	info.low_limit = PAGE_SIZE;
@@ -212,6 +212,7 @@ get_unmapped_area:
 		info.align_mask = get_align_mask();
 		info.align_offset += get_align_bits();
 	}
+
 	addr = vm_unmapped_area(&info);
 	if (!(addr & ~PAGE_MASK))
 		return addr;

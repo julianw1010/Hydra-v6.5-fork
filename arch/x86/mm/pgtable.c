@@ -6,6 +6,13 @@
 #include <asm/tlb.h>
 #include <asm/fixmap.h>
 #include <asm/mtrr.h>
+#include <linux/swapops.h>
+#include <linux/signal.h>
+#include <linux/sched/signal.h>
+#include <linux/hydra_util.h>
+#include <linux/mempolicy.h>
+#include <linux/slab.h>
+#include <asm/hydra_pti.h>
 
 #ifdef CONFIG_DYNAMIC_PHYSICAL_MASK
 phys_addr_t physical_mask __ro_after_init = (1ULL << __PHYSICAL_MASK_SHIFT) - 1;
@@ -52,43 +59,65 @@ early_param("userpte", setup_userpte);
 
 void ___pte_free_tlb(struct mmu_gather *tlb, struct page *pte)
 {
+	hydra_break_chain(pte);
 	pgtable_pte_page_dtor(pte);
 	paravirt_release_pte(page_to_pfn(pte));
+
+	if (hydra_try_return_page(pte))
+		return;
+
 	paravirt_tlb_remove_table(tlb, pte);
 }
 
 #if CONFIG_PGTABLE_LEVELS > 2
+
 void ___pmd_free_tlb(struct mmu_gather *tlb, pmd_t *pmd)
 {
 	struct page *page = virt_to_page(pmd);
+
+	hydra_break_chain(page);
 	paravirt_release_pmd(__pa(pmd) >> PAGE_SHIFT);
-	/*
-	 * NOTE! For PAE, any changes to the top page-directory-pointer-table
-	 * entries need a full cr3 reload to flush.
-	 */
 #ifdef CONFIG_X86_PAE
 	tlb->need_flush_all = 1;
 #endif
 	pgtable_pmd_page_dtor(page);
+
+	if (hydra_try_return_page(page))
+		return;
+
 	paravirt_tlb_remove_table(tlb, page);
 }
 
 #if CONFIG_PGTABLE_LEVELS > 3
+
 void ___pud_free_tlb(struct mmu_gather *tlb, pud_t *pud)
 {
-	paravirt_release_pud(__pa(pud) >> PAGE_SHIFT);
-	paravirt_tlb_remove_table(tlb, virt_to_page(pud));
-}
+	struct page *page = virt_to_page(pud);
 
+	paravirt_release_pud(__pa(pud) >> PAGE_SHIFT);
+
+	if (hydra_try_return_page(page))
+		return;
+
+	paravirt_tlb_remove_table(tlb, page);
+}
 #if CONFIG_PGTABLE_LEVELS > 4
+
 void ___p4d_free_tlb(struct mmu_gather *tlb, p4d_t *p4d)
 {
+	struct page *page = virt_to_page(p4d);
+
 	paravirt_release_p4d(__pa(p4d) >> PAGE_SHIFT);
-	paravirt_tlb_remove_table(tlb, virt_to_page(p4d));
+
+	if (hydra_try_return_page(page))
+		return;
+
+	paravirt_tlb_remove_table(tlb, page);
 }
-#endif	/* CONFIG_PGTABLE_LEVELS > 4 */
-#endif	/* CONFIG_PGTABLE_LEVELS > 3 */
-#endif	/* CONFIG_PGTABLE_LEVELS > 2 */
+
+#endif  /* CONFIG_PGTABLE_LEVELS > 4 */
+#endif  /* CONFIG_PGTABLE_LEVELS > 3 */
+#endif  /* CONFIG_PGTABLE_LEVELS > 2 */
 
 static inline void pgd_list_add(pgd_t *pgd)
 {
@@ -140,7 +169,7 @@ static void pgd_ctor(struct mm_struct *mm, pgd_t *pgd)
 	}
 }
 
-static void pgd_dtor(pgd_t *pgd)
+void pgd_dtor(pgd_t *pgd)
 {
 	if (SHARED_KERNEL_PMD)
 		return;
@@ -380,41 +409,64 @@ void __init pgtable_cache_init(void)
 				      SLAB_PANIC, NULL);
 }
 
-static inline pgd_t *_pgd_alloc(void)
+static inline pgd_t *_pgd_alloc(struct mm_struct *mm)
 {
-	/*
-	 * If no SHARED_KERNEL_PMD, PAE kernel is running as a Xen domain.
-	 * We allocate one page for pgd.
-	 */
-	if (!SHARED_KERNEL_PMD)
-		return (pgd_t *)__get_free_pages(GFP_PGTABLE_USER,
-						 PGD_ALLOCATION_ORDER);
+	if (!SHARED_KERNEL_PMD) {
+		struct page *page;
+		int order = hydra_pgd_alloc_order();
 
-	/*
-	 * Now PAE kernel is not running as a Xen domain. We can allocate
-	 * a 32-byte slab for pgd to save memory space.
-	 */
+		page = hydra_alloc_pt_page(mm, GFP_PGTABLE_USER, order);
+		if (!page)
+			return NULL;
+
+		return (pgd_t *)page_address(page);
+	}
+
 	return kmem_cache_alloc(pgd_cache, GFP_PGTABLE_USER);
 }
 
-static inline void _pgd_free(pgd_t *pgd)
+static inline void _pgd_free(struct mm_struct *mm, pgd_t *pgd)
 {
-	if (!SHARED_KERNEL_PMD)
-		free_pages((unsigned long)pgd, PGD_ALLOCATION_ORDER);
-	else
+	int order = hydra_pgd_alloc_order();
+
+	if (!SHARED_KERNEL_PMD) {
+		struct page *page = virt_to_page(pgd);
+
+		page->pt_owner_mm = NULL;
+
+		if (hydra_try_return_page(page))
+			return;
+
+		free_pages((unsigned long)pgd, order);
+	} else {
 		kmem_cache_free(pgd_cache, pgd);
+	}
 }
 #else
 
-static inline pgd_t *_pgd_alloc(void)
+static inline pgd_t *_pgd_alloc(struct mm_struct *mm)
 {
-	return (pgd_t *)__get_free_pages(GFP_PGTABLE_USER,
-					 PGD_ALLOCATION_ORDER);
+	struct page *page;
+	int order = hydra_pgd_alloc_order();
+
+	page = hydra_alloc_pt_page(mm, GFP_PGTABLE_USER, order);
+	if (!page)
+		return NULL;
+
+	return (pgd_t *)page_address(page);
 }
 
-static inline void _pgd_free(pgd_t *pgd)
+static inline void _pgd_free(struct mm_struct *mm, pgd_t *pgd)
 {
-	free_pages((unsigned long)pgd, PGD_ALLOCATION_ORDER);
+	struct page *page = virt_to_page(pgd);
+	int order = hydra_pgd_alloc_order();
+
+	page->pt_owner_mm = NULL;
+
+	if (hydra_try_return_page(page))
+		return;
+
+	free_pages((unsigned long)pgd, order);
 }
 #endif /* CONFIG_X86_PAE */
 
@@ -424,7 +476,7 @@ pgd_t *pgd_alloc(struct mm_struct *mm)
 	pmd_t *u_pmds[MAX_PREALLOCATED_USER_PMDS];
 	pmd_t *pmds[MAX_PREALLOCATED_PMDS];
 
-	pgd = _pgd_alloc();
+	pgd = _pgd_alloc(mm);
 
 	if (pgd == NULL)
 		goto out;
@@ -467,7 +519,7 @@ out_free_pmds:
 	if (sizeof(pmds) != 0)
 		free_pmds(mm, pmds, PREALLOCATED_PMDS);
 out_free_pgd:
-	_pgd_free(pgd);
+	_pgd_free(mm, pgd);
 out:
 	return NULL;
 }
@@ -477,7 +529,7 @@ void pgd_free(struct mm_struct *mm, pgd_t *pgd)
 	pgd_mop_up_pmds(mm, pgd);
 	pgd_dtor(pgd);
 	paravirt_pgd_free(mm, pgd);
-	_pgd_free(pgd);
+	_pgd_free(mm, pgd);
 }
 
 /*
@@ -539,32 +591,6 @@ int pudp_set_access_flags(struct vm_area_struct *vma, unsigned long address,
 	}
 
 	return changed;
-}
-#endif
-
-int ptep_test_and_clear_young(struct vm_area_struct *vma,
-			      unsigned long addr, pte_t *ptep)
-{
-	int ret = 0;
-
-	if (pte_young(*ptep))
-		ret = test_and_clear_bit(_PAGE_BIT_ACCESSED,
-					 (unsigned long *) &ptep->pte);
-
-	return ret;
-}
-
-#if defined(CONFIG_TRANSPARENT_HUGEPAGE) || defined(CONFIG_ARCH_HAS_NONLEAF_PMD_YOUNG)
-int pmdp_test_and_clear_young(struct vm_area_struct *vma,
-			      unsigned long addr, pmd_t *pmdp)
-{
-	int ret = 0;
-
-	if (pmd_young(*pmdp))
-		ret = test_and_clear_bit(_PAGE_BIT_ACCESSED,
-					 (unsigned long *)pmdp);
-
-	return ret;
 }
 #endif
 
@@ -880,3 +906,53 @@ int pmd_free_pte_page(pmd_t *pmd, unsigned long addr)
 
 #endif /* CONFIG_X86_64 */
 #endif	/* CONFIG_HAVE_ARCH_HUGE_VMAP */
+
+void pgtable_repl_set_pte_at(struct mm_struct *mm, unsigned long addr, pte_t *ptep, pte_t pteval)
+{
+	pgtable_repl_set_pte(ptep, pteval);
+}
+
+pgd_t *repl_pgd_alloc(struct mm_struct *mm, size_t nid)
+{
+	pgd_t *pgd;
+	pmd_t *pmds[PREALLOCATED_PMDS];
+	struct page *page;
+	int order = hydra_pgd_alloc_order();
+	nodemask_t nm = NODE_MASK_NONE;
+
+	if (order == 0) {
+		page = hydra_cache_pop(nid);
+		if (page)
+			goto got_page;
+	}
+
+	node_set(nid, nm);
+	page = __alloc_pages(GFP_PGTABLE_USER | __GFP_THISNODE, order, nid, &nm);
+	if (!page)
+		goto out;
+
+	page->next_replica = NULL;
+
+got_page:
+	page->pt_owner_mm = mm;
+	pgd = (pgd_t *)page_address(page);
+
+	if (PREALLOCATED_PMDS > 0) {
+		if (preallocate_pmds(mm, pmds, PREALLOCATED_PMDS) != 0)
+			goto out_free_page;
+	}
+
+	spin_lock(&pgd_lock);
+	pgd_ctor(mm, pgd);
+	pgd_prepopulate_pmd(mm, pgd, pmds);
+	spin_unlock(&pgd_lock);
+
+	return pgd;
+
+out_free_page:
+	page->pt_owner_mm = NULL;
+	if (!hydra_try_return_page(page))
+		free_pages((unsigned long)pgd, order);
+out:
+	return NULL;
+}

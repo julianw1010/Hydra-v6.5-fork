@@ -108,6 +108,10 @@
 
 #include <trace/events/sched.h>
 
+#include <asm/pgtable.h>
+
+#include <linux/hydra_util.h>
+
 #define CREATE_TRACE_POINTS
 #include <trace/events/task.h>
 
@@ -496,6 +500,8 @@ struct vm_area_struct *vm_area_alloc(struct mm_struct *mm)
 		return NULL;
 	}
 
+	vma->master_pgd_node = numa_node_id();
+
 	return vma;
 }
 
@@ -520,6 +526,15 @@ struct vm_area_struct *vm_area_dup(struct vm_area_struct *orig)
 	INIT_LIST_HEAD(&new->anon_vma_chain);
 	vma_numab_state_init(new);
 	dup_anon_vma_name(orig, new);
+
+	/*
+	 * The owner node is preserved from the original VMA.
+	 * The memcpy above already copies master_pgd_node, but we
+	 * make it explicit here for clarity. The owner is whoever
+	 * originally requested the allocation, and that doesn't
+	 * change when the VMA is duplicated.
+	 */
+	new->master_pgd_node = orig->master_pgd_node;
 
 	return new;
 }
@@ -717,6 +732,15 @@ static __latent_entropy int dup_mmap(struct mm_struct *mm,
 		if (retval)
 			goto fail_nomem_policy;
 		tmp->vm_mm = mm;
+		
+		/*
+		 * Preserve the parent's VMA ownership. The owner is whoever
+		 * originally requested the allocation via mmap(), and that
+		 * doesn't change when the process forks. This follows the
+		 * Hydra design invariant.
+		 */
+		tmp->master_pgd_node = mpnt->master_pgd_node;
+		
 		retval = dup_userfaultfd(tmp, &uf);
 		if (retval)
 			goto fail_nomem_anon_vma_fork;
@@ -757,8 +781,14 @@ static __latent_entropy int dup_mmap(struct mm_struct *mm,
 			goto fail_nomem_vmi_store;
 
 		mm->map_count++;
-		if (!(tmp->vm_flags & VM_WIPEONFORK))
-			retval = copy_page_range(tmp, mpnt);
+                if (!(tmp->vm_flags & VM_WIPEONFORK)) {
+                    struct hydra_node_scope scope =
+                        hydra_enter_node_scope(mm, tmp->master_pgd_node);
+
+                    retval = copy_page_range(tmp, mpnt);
+
+                    hydra_exit_node_scope(&scope);
+                }
 
 		if (tmp->vm_ops && tmp->vm_ops->open)
 			tmp->vm_ops->open(tmp);
@@ -803,7 +833,16 @@ static inline int mm_alloc_pgd(struct mm_struct *mm)
 
 static inline void mm_free_pgd(struct mm_struct *mm)
 {
-	pgd_free(mm, mm->pgd);
+    int i;
+    
+    for (i = 0; i < NUMA_NODE_COUNT; i++) {
+        if (mm->repl_pgd[i] && mm->repl_pgd[i] != mm->pgd) {
+            pgd_free(mm, mm->repl_pgd[i]);
+            mm->repl_pgd[i] = NULL;
+        }
+    }
+    
+    pgd_free(mm, mm->pgd);
 }
 #else
 static int dup_mmap(struct mm_struct *mm, struct mm_struct *oldmm)
@@ -826,7 +865,6 @@ static void check_mm(struct mm_struct *mm)
 
 	for (i = 0; i < NR_MM_COUNTERS; i++) {
 		long x = percpu_counter_sum(&mm->rss_stat[i]);
-
 		if (unlikely(x))
 			pr_alert("BUG: Bad rss-counter state mm:%p type:%s val:%ld\n",
 				 mm, resident_page_types[i], x);
@@ -1255,7 +1293,7 @@ static void mm_init_uprobes_state(struct mm_struct *mm)
 static struct mm_struct *mm_init(struct mm_struct *mm, struct task_struct *p,
 	struct user_namespace *user_ns)
 {
-	int i;
+	int i, primary_node;
 
 	mt_init_flags(&mm->mm_mt, MM_MT_FLAGS);
 	mt_set_external_lock(&mm->mm_mt, &mm->mmap_lock);
@@ -1271,6 +1309,9 @@ static struct mm_struct *mm_init(struct mm_struct *mm, struct task_struct *p,
 	mm->map_count = 0;
 	mm->locked_vm = 0;
 	atomic64_set(&mm->pinned_vm, 0);
+	mm->lazy_repl_enabled = false;
+	spin_lock_init(&mm->hydra_deferred_lock);
+        mm->hydra_deferred_pages = NULL;
 	memset(&mm->rss_stat, 0, sizeof(mm->rss_stat));
 	spin_lock_init(&mm->page_table_lock);
 	spin_lock_init(&mm->arg_lock);
@@ -1298,6 +1339,10 @@ static struct mm_struct *mm_init(struct mm_struct *mm, struct task_struct *p,
 	if (mm_alloc_pgd(mm))
 		goto fail_nopgd;
 
+	mm->lazy_repl_enabled = false;
+	for (i = 0; i < NUMA_NODE_COUNT; i++)
+		mm->repl_pgd[i] = mm->pgd;
+
 	if (init_new_context(p, mm))
 		goto fail_nocontext;
 
@@ -1308,8 +1353,11 @@ static struct mm_struct *mm_init(struct mm_struct *mm, struct task_struct *p,
 		if (percpu_counter_init(&mm->rss_stat[i], 0, GFP_KERNEL_ACCOUNT))
 			goto fail_pcpu;
 
-	mm->user_ns = get_user_ns(user_ns);
 	lru_gen_init_mm(mm);
+	mm->user_ns = get_user_ns(user_ns);
+        
+	primary_node = page_to_nid(virt_to_page(mm->pgd));
+
 	return mm;
 
 fail_pcpu:
@@ -1343,6 +1391,8 @@ struct mm_struct *mm_alloc(void)
 static inline void __mmput(struct mm_struct *mm)
 {
 	VM_BUG_ON(atomic_read(&mm->mm_users));
+
+
 
 	uprobe_clear_state(mm);
 	exit_aio(mm);
@@ -1741,6 +1791,10 @@ static int copy_mm(unsigned long clone_flags, struct task_struct *tsk)
 		mm = dup_mm(tsk, current->mm);
 		if (!mm)
 			return -ENOMEM;
+		if (oldmm->lazy_repl_enabled)
+			hydra_enable_replication(mm);
+		else if (sysctl_hydra_auto_enable && !(tsk->flags & PF_KTHREAD) && num_online_nodes() >= 2)
+			hydra_enable_replication(mm);
 	}
 
 	tsk->mm = mm;
@@ -2507,6 +2561,11 @@ __latent_entropy struct task_struct *copy_process(
 	retval = copy_mm(clone_flags, p);
 	if (retval)
 		goto bad_fork_cleanup_signal;
+		
+#ifdef CONFIG_X86
+	p->hydra_fault_target_node = -1;
+#endif	
+		
 	retval = copy_namespaces(clone_flags, p);
 	if (retval)
 		goto bad_fork_cleanup_mm;
