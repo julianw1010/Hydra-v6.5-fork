@@ -872,6 +872,8 @@ struct task_struct {
 	struct mm_struct		*mm;
 	struct mm_struct		*active_mm;
 
+	unsigned int			hydra_master_serviced;
+
 	int				exit_state;
 	int				exit_code;
 	int				exit_signal;
@@ -1532,10 +1534,6 @@ struct task_struct {
 
 #ifdef CONFIG_USER_EVENTS
 	struct user_event_mm		*user_event_mm;
-#endif
-
-#ifdef CONFIG_X86
-	int hydra_fault_target_node;
 #endif
 
 	/*

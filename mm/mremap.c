@@ -31,35 +31,43 @@
 #include <asm/pgalloc.h>
 
 #include "internal.h"
-#include <linux/hydra_util.h>
 
-static pud_t *get_old_pud(struct mm_struct *mm, struct vm_area_struct *vma, unsigned long addr)
+#include <linux/hydra.h>
+
+static pud_t *get_old_pud(struct mm_struct *mm, unsigned long addr)
 {
 	pgd_t *pgd;
 	p4d_t *p4d;
 	pud_t *pud;
-	pgd = mm->lazy_repl_enabled ? pgd_offset_node(mm, addr, vma->master_pgd_node) : pgd_offset(mm, addr);
+
+	pgd = pgd_offset(mm, addr);
 	if (pgd_none_or_clear_bad(pgd))
 		return NULL;
+
 	p4d = p4d_offset(pgd, addr);
 	if (p4d_none_or_clear_bad(p4d))
 		return NULL;
+
 	pud = pud_offset(p4d, addr);
 	if (pud_none_or_clear_bad(pud))
 		return NULL;
+
 	return pud;
 }
 
-static pmd_t *get_old_pmd(struct mm_struct *mm, struct vm_area_struct *vma, unsigned long addr)
+static pmd_t *get_old_pmd(struct mm_struct *mm, unsigned long addr)
 {
 	pud_t *pud;
 	pmd_t *pmd;
-	pud = get_old_pud(mm, vma, addr);
+
+	pud = get_old_pud(mm, addr);
 	if (!pud)
 		return NULL;
+
 	pmd = pmd_offset(pud, addr);
 	if (pmd_none(*pmd))
 		return NULL;
+
 	return pmd;
 }
 
@@ -68,10 +76,12 @@ static pud_t *alloc_new_pud(struct mm_struct *mm, struct vm_area_struct *vma,
 {
 	pgd_t *pgd;
 	p4d_t *p4d;
-	pgd = mm->lazy_repl_enabled ? pgd_offset_node(mm, addr, vma->master_pgd_node) : pgd_offset(mm, addr);
+
+	pgd = pgd_offset(mm, addr);
 	p4d = p4d_alloc(mm, pgd, addr);
 	if (!p4d)
 		return NULL;
+
 	return pud_alloc(mm, p4d, addr);
 }
 
@@ -249,6 +259,12 @@ static bool move_normal_pmd(struct vm_area_struct *vma, unsigned long old_addr,
 	if (WARN_ON_ONCE(!pmd_none(*new_pmd)))
 		return false;
 
+	if (mm->lazy_repl_enabled) {
+		if (virt_to_page(old_pmd) != virt_to_page(new_pmd))
+			return false;
+		return hydra_move_normal_pmd(vma, old_addr, old_pmd, new_pmd);
+	}
+
 	/*
 	 * We don't have to worry about the ordering of src and dst
 	 * ptlocks because exclusive mmap_lock prevents deadlock.
@@ -288,6 +304,9 @@ static bool move_normal_pud(struct vm_area_struct *vma, unsigned long old_addr,
 	spinlock_t *old_ptl, *new_ptl;
 	struct mm_struct *mm = vma->vm_mm;
 	pud_t pud;
+
+	if (mm->lazy_repl_enabled)
+		return false;
 
 	if (!arch_supports_page_table_move())
 		return false;
@@ -479,18 +498,21 @@ unsigned long move_page_tables(struct vm_area_struct *vma,
 	struct mmu_notifier_range range;
 	pmd_t *old_pmd, *new_pmd;
 	pud_t *old_pud, *new_pud;
-	struct hydra_node_scope scope;
+
 	if (!len)
 		return 0;
+
 	old_end = old_addr + len;
+
 	if (is_vm_hugetlb_page(vma))
 		return move_hugetlb_page_tables(vma, new_vma, old_addr,
 						new_addr, len);
+
 	flush_cache_range(vma, old_addr, old_end);
 	mmu_notifier_range_init(&range, MMU_NOTIFY_UNMAP, 0, vma->vm_mm,
 				old_addr, old_end);
 	mmu_notifier_invalidate_range_start(&range);
-	scope = hydra_enter_node_scope(vma->vm_mm, new_vma->master_pgd_node);
+
 	for (; old_addr < old_end; old_addr += extent, new_addr += extent) {
 		cond_resched();
 		/*
@@ -498,7 +520,8 @@ unsigned long move_page_tables(struct vm_area_struct *vma,
 		 * PUD level if possible.
 		 */
 		extent = get_extent(NORMAL_PUD, old_addr, old_end, new_addr);
-		old_pud = get_old_pud(vma->vm_mm, vma, old_addr);
+
+		old_pud = get_old_pud(vma->vm_mm, old_addr);
 		if (!old_pud)
 			continue;
 		new_pud = alloc_new_pud(vma->vm_mm, vma, new_addr);
@@ -512,12 +535,14 @@ unsigned long move_page_tables(struct vm_area_struct *vma,
 				continue;
 			}
 		} else if (IS_ENABLED(CONFIG_HAVE_MOVE_PUD) && extent == PUD_SIZE) {
+
 			if (move_pgt_entry(NORMAL_PUD, vma, old_addr, new_addr,
 					   old_pud, new_pud, true))
 				continue;
 		}
+
 		extent = get_extent(NORMAL_PMD, old_addr, old_end, new_addr);
-		old_pmd = get_old_pmd(vma->vm_mm, vma, old_addr);
+		old_pmd = get_old_pmd(vma->vm_mm, old_addr);
 		if (!old_pmd)
 			continue;
 		new_pmd = alloc_new_pmd(vma->vm_mm, vma, new_addr);
@@ -542,13 +567,15 @@ unsigned long move_page_tables(struct vm_area_struct *vma,
 					   old_pmd, new_pmd, true))
 				continue;
 		}
+
 		if (pte_alloc(new_vma->vm_mm, new_pmd))
 			break;
 		move_ptes(vma, old_pmd, old_addr, old_addr + extent, new_vma,
 			  new_pmd, new_addr, need_rmap_locks);
 	}
-	hydra_exit_node_scope(&scope);
+
 	mmu_notifier_invalidate_range_end(&range);
+
 	return len + old_addr - old_end;	/* how much done */
 }
 
@@ -616,6 +643,9 @@ static unsigned long move_vma(struct vm_area_struct *vma,
 			vm_unacct_memory(to_account >> PAGE_SHIFT);
 		return -ENOMEM;
 	}
+
+	if (mm->lazy_repl_enabled)
+		hydra_fixup_pud_nodes(mm, new_vma);
 
 	moved_len = move_page_tables(vma, old_addr, new_vma, new_addr, old_len,
 				     need_rmap_locks);
@@ -1029,7 +1059,7 @@ SYSCALL_DEFINE5(mremap, unsigned long, addr, unsigned long, old_len,
 			vma = vma_merge(&vmi, mm, vma, extension_start,
 				extension_end, vma->vm_flags, vma->anon_vma,
 				vma->vm_file, extension_pgoff, vma_policy(vma),
-				vma->vm_userfaultfd_ctx, anon_vma_name(vma), vma->master_pgd_node);
+				vma->vm_userfaultfd_ctx, anon_vma_name(vma));
 			if (!vma) {
 				vm_unacct_memory(pages);
 				ret = -ENOMEM;
@@ -1070,6 +1100,13 @@ SYSCALL_DEFINE5(mremap, unsigned long, addr, unsigned long, old_len,
 			       &locked, flags, &uf, &uf_unmap);
 	}
 out:
+	if (!offset_in_page(ret) && !downgraded &&
+	    current->mm->lazy_repl_enabled) {
+		struct vm_area_struct *new_vma = find_vma(current->mm, ret);
+
+		if (new_vma)
+			hydra_fixup_pud_nodes(current->mm, new_vma);
+	}
 	if (offset_in_page(ret))
 		locked = false;
 	if (downgraded)

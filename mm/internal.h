@@ -196,7 +196,16 @@ extern void reclaim_throttle(pg_data_t *pgdat, enum vmscan_throttle_state reason
 /*
  * in mm/rmap.c:
  */
-pmd_t *mm_find_pmd(struct mm_struct *mm, struct vm_area_struct *vma, unsigned long address);
+pmd_t *mm_find_pmd(struct mm_struct *mm, unsigned long address);
+
+unsigned long hydra_gup_fast_end(struct mm_struct *mm, unsigned long start,
+				 unsigned long end);
+
+void hydra_fixup_pud_nodes(struct mm_struct *mm,
+			   struct vm_area_struct *vma);
+bool hydra_stack_expand_conflict(struct mm_struct *mm,
+				 struct vm_area_struct *vma,
+				 unsigned long start, unsigned long end);
 
 /*
  * in mm/page_alloc.c

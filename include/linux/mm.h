@@ -476,7 +476,8 @@ static inline bool fault_flag_allow_retry_first(enum fault_flag flags)
 	{ FAULT_FLAG_REMOTE,		"REMOTE" }, \
 	{ FAULT_FLAG_INSTRUCTION,	"INSTRUCTION" }, \
 	{ FAULT_FLAG_INTERRUPTIBLE,	"INTERRUPTIBLE" }, \
-	{ FAULT_FLAG_VMA_LOCK,		"VMA_LOCK" }
+	{ FAULT_FLAG_VMA_LOCK,		"VMA_LOCK" }, \
+	{ FAULT_FLAG_PROT,		"PROT" }
 
 /*
  * vm_fault is filled by the pagefault handler and passed to the vma's
@@ -2303,8 +2304,8 @@ void free_pgd_range(struct mmu_gather *tlb, unsigned long addr,
 		unsigned long end, unsigned long floor, unsigned long ceiling);
 int
 copy_page_range(struct vm_area_struct *dst_vma, struct vm_area_struct *src_vma);
-int follow_pte(struct mm_struct *mm, struct vm_area_struct *vma,
-               unsigned long address, pte_t **ptepp, spinlock_t **ptlp);
+int follow_pte(struct mm_struct *mm, unsigned long address,
+	       pte_t **ptepp, spinlock_t **ptlp);
 int follow_pfn(struct vm_area_struct *vma, unsigned long address,
 	unsigned long *pfn);
 int follow_phys(struct vm_area_struct *vma, unsigned long address,
@@ -2319,7 +2320,7 @@ void truncate_pagecache_range(struct inode *inode, loff_t offset, loff_t end);
 int generic_error_remove_page(struct address_space *mapping, struct page *page);
 
 #ifdef CONFIG_MMU
-int __handle_mm_fault(struct vm_area_struct *vma, unsigned long address,
+vm_fault_t __handle_mm_fault(struct vm_area_struct *vma, unsigned long address,
 		unsigned int flags, int use_master);
 extern vm_fault_t handle_mm_fault(struct vm_area_struct *vma,
 				  unsigned long address, unsigned int flags,
@@ -2475,18 +2476,21 @@ void mm_trace_rss_stat(struct mm_struct *mm, int member);
 static inline void add_mm_counter(struct mm_struct *mm, int member, long value)
 {
 	percpu_counter_add(&mm->rss_stat[member], value);
+
 	mm_trace_rss_stat(mm, member);
 }
 
 static inline void inc_mm_counter(struct mm_struct *mm, int member)
 {
 	percpu_counter_inc(&mm->rss_stat[member]);
+
 	mm_trace_rss_stat(mm, member);
 }
 
 static inline void dec_mm_counter(struct mm_struct *mm, int member)
 {
 	percpu_counter_dec(&mm->rss_stat[member]);
+
 	mm_trace_rss_stat(mm, member);
 }
 
@@ -2578,12 +2582,12 @@ static inline int pte_devmap(pte_t pte)
 #endif
 
 extern pte_t *__get_locked_pte(struct mm_struct *mm, unsigned long addr,
-			       spinlock_t **ptl, struct vm_area_struct *vma);
+			       spinlock_t **ptl);
 static inline pte_t *get_locked_pte(struct mm_struct *mm, unsigned long addr,
-				    spinlock_t **ptl, struct vm_area_struct *vma)
+				    spinlock_t **ptl)
 {
 	pte_t *ptep;
-	__cond_lock(*ptl, ptep = __get_locked_pte(mm, addr, ptl, vma));
+	__cond_lock(*ptl, ptep = __get_locked_pte(mm, addr, ptl));
 	return ptep;
 }
 
@@ -2593,15 +2597,8 @@ static inline int __p4d_alloc(struct mm_struct *mm, pgd_t *pgd,
 {
 	return 0;
 }
-
-static inline int __repl_p4d_alloc(struct mm_struct *mm, pgd_t *pgd,
-						unsigned long address, size_t nid)
-{
-	return 0;
-}
 #else
 int __p4d_alloc(struct mm_struct *mm, pgd_t *pgd, unsigned long address);
-int __repl_p4d_alloc(struct mm_struct *mm, pgd_t *pgd, unsigned long address, size_t nid);
 #endif
 
 #if defined(__PAGETABLE_PUD_FOLDED) || !defined(CONFIG_MMU)
@@ -2615,7 +2612,6 @@ static inline void mm_dec_nr_puds(struct mm_struct *mm) {}
 
 #else
 int __pud_alloc(struct mm_struct *mm, p4d_t *p4d, unsigned long address);
-int __repl_pud_alloc(struct mm_struct *mm, p4d_t *p4d, unsigned long address, size_t nid);
 
 static inline void mm_inc_nr_puds(struct mm_struct *mm)
 {
@@ -2644,8 +2640,7 @@ static inline void mm_dec_nr_pmds(struct mm_struct *mm) {}
 
 #else
 int __pmd_alloc(struct mm_struct *mm, pud_t *pud, unsigned long address);
-int __repl_pmd_alloc(struct mm_struct *mm, pud_t *pud, unsigned long address,
-		     size_t nid, size_t owner_node);
+int hydra_alloc_replica_pmd(struct mm_struct *mm, pud_t *pud, unsigned long address, size_t owner_node);
 
 static inline void mm_inc_nr_pmds(struct mm_struct *mm)
 {
@@ -2705,24 +2700,11 @@ static inline p4d_t *p4d_alloc(struct mm_struct *mm, pgd_t *pgd,
 	return (unlikely(pgd_none(*pgd)) && __p4d_alloc(mm, pgd, address)) ?
 		NULL : p4d_offset(pgd, address);
 }
-static inline p4d_t *repl_p4d_alloc(struct mm_struct *mm, pgd_t *pgd,
-		unsigned long address, size_t nid)
-{
-	return (unlikely(pgd_none(*pgd)) && __repl_p4d_alloc(mm, pgd, address, nid)) ?
-		NULL : p4d_offset(pgd, address);
-}
 
 static inline pud_t *pud_alloc(struct mm_struct *mm, p4d_t *p4d,
 		unsigned long address)
 {
 	return (unlikely(p4d_none(*p4d)) && __pud_alloc(mm, p4d, address)) ?
-		NULL : pud_offset(p4d, address);
-}
-
-static inline pud_t *repl_pud_alloc(struct mm_struct *mm, p4d_t *p4d,
-		unsigned long address, size_t nid)
-{
-	return (unlikely(p4d_none(*p4d)) && __repl_pud_alloc(mm, p4d, address, nid)) ?
 		NULL : pud_offset(p4d, address);
 }
 
@@ -2732,10 +2714,9 @@ static inline pmd_t *pmd_alloc(struct mm_struct *mm, pud_t *pud, unsigned long a
 		NULL: pmd_offset(pud, address);
 }
 
-static inline pmd_t *repl_pmd_alloc(struct mm_struct *mm, pud_t *pud,
-		unsigned long address, size_t nid, size_t owner_node)
+static inline pmd_t *hydra_repl_pmd_alloc(struct mm_struct *mm, pud_t *pud, unsigned long address, size_t owner_node)
 {
-	return (unlikely(pud_none(*pud)) && __repl_pmd_alloc(mm, pud, address, nid, owner_node))?
+	return (unlikely(pud_none(*pud)) && hydra_alloc_replica_pmd(mm, pud, address, owner_node))?
 		NULL: pmd_offset(pud, address);
 }
 
@@ -3108,7 +3089,7 @@ extern struct vm_area_struct *vma_merge(struct vma_iterator *vmi,
 	struct mm_struct *, struct vm_area_struct *prev, unsigned long addr,
 	unsigned long end, unsigned long vm_flags, struct anon_vma *,
 	struct file *, pgoff_t, struct mempolicy *, struct vm_userfaultfd_ctx,
-	struct anon_vma_name *, unsigned long);
+	struct anon_vma_name *);
 extern struct anon_vma *find_mergeable_anon_vma(struct vm_area_struct *);
 extern int __split_vma(struct vma_iterator *vmi, struct vm_area_struct *,
 		       unsigned long addr, int new_below);

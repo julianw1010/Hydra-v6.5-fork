@@ -231,13 +231,12 @@ struct page {
 	struct page *kmsan_origin;
 #endif
 
-struct page *next_replica;
-struct mm_struct *pt_owner_mm;
-struct mitosis_pte_tracking *mitosis_tracking;
-
 #ifdef LAST_CPUPID_NOT_IN_PAGE_FLAGS
 	int _last_cpupid;
 #endif
+	struct page *next_replica;
+	struct mm_struct *pt_owner_mm;
+	int pt_level;
 } _struct_page_alignment;
 
 /*
@@ -531,8 +530,6 @@ struct vm_area_struct {
 	bool detached;
 #endif
 
-	unsigned long  master_pgd_node;
-
 	/*
 	 * For areas with an address space and backing store,
 	 * linkage into the address_space->i_mmap interval tree.
@@ -582,6 +579,9 @@ struct vm_area_struct {
 #ifdef CONFIG_NUMA_BALANCING
 	struct vma_numab_state *numab_state;	/* NUMA Balancing state */
 #endif
+
+	unsigned long  master_pgd_node;
+
 	struct vm_userfaultfd_ctx vm_userfaultfd_ctx;
 } __randomize_layout;
 
@@ -608,24 +608,12 @@ struct mm_struct {
 		unsigned long mmap_compat_base;
 		unsigned long mmap_compat_legacy_base;
 #endif
-	unsigned long task_size;		/* size of task vm space */
-	unsigned long highest_vm_end;		/* highest vma end address */
-
-	bool          lazy_repl_enabled;
-	
-	
-	
-	
-	
-
-	
-	
-	pgd_t * repl_pgd[NUMA_NODE_COUNT];
-	
-	spinlock_t hydra_deferred_lock;
-        struct page *hydra_deferred_pages;
-	
-	pgd_t * pgd;
+		unsigned long task_size;	/* size of task vm space */
+		bool          lazy_repl_enabled;
+		pgd_t * repl_pgd[NUMA_NODE_COUNT];
+		struct xarray *hydra_pud_owner;
+		struct hydra_stats *hydra_stats;
+		pgd_t * pgd;
 
 #ifdef CONFIG_MEMBARRIER
 		/**
@@ -1196,6 +1184,7 @@ enum fault_flag {
 	FAULT_FLAG_UNSHARE =		1 << 10,
 	FAULT_FLAG_ORIG_PTE_VALID =	1 << 11,
 	FAULT_FLAG_VMA_LOCK =		1 << 12,
+	FAULT_FLAG_PROT =		1 << 13,
 };
 
 typedef unsigned int __bitwise zap_flags_t;

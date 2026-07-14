@@ -154,6 +154,12 @@ arch_get_unmapped_area(struct file *filp, unsigned long addr,
 		info.align_mask = get_align_mask();
 		info.align_offset += get_align_bits();
 	}
+
+	if (mm->lazy_repl_enabled && info.align_mask < ((1UL << 30) - 1)) {
+		info.align_mask = (1UL << 30) - 1;
+		info.align_offset = 0;
+	}
+
 	return vm_unmapped_area(&info);
 }
 
@@ -189,8 +195,8 @@ arch_get_unmapped_area_topdown(struct file *filp, const unsigned long addr0,
 		if (!vma || addr + len <= vm_start_gap(vma))
 			return addr;
 	}
-
 get_unmapped_area:
+
 	info.flags = VM_UNMAPPED_AREA_TOPDOWN;
 	info.length = len;
 	info.low_limit = PAGE_SIZE;
@@ -211,6 +217,11 @@ get_unmapped_area:
 	if (filp) {
 		info.align_mask = get_align_mask();
 		info.align_offset += get_align_bits();
+	}
+
+	if (mm->lazy_repl_enabled && info.align_mask < ((1UL << 30) - 1)) {
+		info.align_mask = (1UL << 30) - 1;
+		info.align_offset = 0;
 	}
 
 	addr = vm_unmapped_area(&info);

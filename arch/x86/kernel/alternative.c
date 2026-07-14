@@ -1581,7 +1581,7 @@ static void *__text_poke(text_poke_f func, void *addr, const void *src, size_t l
 	/*
 	 * The lock is not really needed, but this allows to avoid open-coding.
 	 */
-	ptep = get_locked_pte(poking_mm, poking_addr, &ptl, NULL);
+	ptep = get_locked_pte(poking_mm, poking_addr, &ptl);
 
 	/*
 	 * This must not fail; preallocated in poking_init().

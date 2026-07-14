@@ -1975,7 +1975,7 @@ static int unuse_vma(struct vm_area_struct *vma, unsigned int type)
 	addr = vma->vm_start;
 	end = vma->vm_end;
 
-	pgd = vma->vm_mm->lazy_repl_enabled ? pgd_offset_node(vma->vm_mm, addr, vma->master_pgd_node) : pgd_offset(vma->vm_mm, addr);
+	pgd = pgd_offset(vma->vm_mm, addr);
 	do {
 		next = pgd_addr_end(addr, end);
 		if (pgd_none_or_clear_bad(pgd))

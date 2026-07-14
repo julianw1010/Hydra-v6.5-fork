@@ -311,7 +311,7 @@ struct mmu_gather {
 	 * requires a complete flush of the tlb
 	 */
 	unsigned int		need_flush_all : 1,
-                        collect_nodemask : 1;
+				collect_nodemask : 1;
 
 	/*
 	 * we have removed page directories
@@ -339,8 +339,9 @@ struct mmu_gather {
 	unsigned int		vma_pfn  : 1;
 
 	unsigned int		batch_count;
+
 	struct vm_area_struct *vma;
-    nodemask_t nodemask;
+	nodemask_t nodemask;
 
 #ifndef CONFIG_MMU_GATHER_NO_GATHER
 	struct mmu_gather_batch *active;
@@ -455,9 +456,8 @@ static inline void tlb_flush_mmu_tlbonly(struct mmu_gather *tlb)
 	 * these bits.
 	 */
 	if (!(tlb->freed_tables || tlb->cleared_ptes || tlb->cleared_pmds ||
-	      tlb->cleared_puds || tlb->cleared_p4ds)) {
+	      tlb->cleared_puds || tlb->cleared_p4ds))
 		return;
-    }
 
 	tlb_flush(tlb);
 	mmu_notifier_invalidate_range(tlb->mm, tlb->start, tlb->end);

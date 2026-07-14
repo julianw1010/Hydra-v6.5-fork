@@ -71,15 +71,13 @@
 #include <asm/mmu_context.h>
 #include <asm/tlb.h>
 
-#include <asm/pgalloc.h>
-#include <linux/hydra_util.h>
-
 #include <trace/events/task.h>
 #include "internal.h"
 
 #include <trace/events/sched.h>
 
-#include <linux/hydra_util.h>
+#include <asm/pgalloc.h>
+#include <linux/hydra.h>
 
 static int bprm_creds_from_file(struct linux_binprm *bprm);
 
@@ -370,6 +368,7 @@ static int bprm_mm_init(struct linux_binprm *bprm)
 {
 	int err;
 	struct mm_struct *mm = NULL;
+
 	bprm->mm = mm = mm_alloc();
 	err = -ENOMEM;
 	if (!mm)
@@ -385,15 +384,19 @@ static int bprm_mm_init(struct linux_binprm *bprm)
 	task_lock(current->group_leader);
 	bprm->rlim_stack = current->signal->rlim[RLIMIT_STACK];
 	task_unlock(current->group_leader);
+
 	err = __bprm_mm_init(bprm);
 	if (err)
 		goto err;
+
 	return 0;
+
 err:
 	if (mm) {
 		bprm->mm = NULL;
 		mmdrop(mm);
 	}
+
 	return err;
 }
 
@@ -1538,7 +1541,6 @@ static struct linux_binprm *alloc_bprm(int fd, struct filename *filename)
 	retval = bprm_mm_init(bprm);
 	if (retval)
 		goto out_free;
-	
 	return bprm;
 
 out_free:
@@ -1870,10 +1872,10 @@ static int bprm_execve(struct linux_binprm *bprm,
 	user_events_execve(current);
 	acct_update_integrals(current);
 	task_numa_free(current, false);
-	
+
 	if (bprm->hydra_repl_enabled)
 		hydra_enable_replication(current->mm);
-	
+
 	return retval;
 
 out:

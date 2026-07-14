@@ -1,14 +1,11 @@
 #include <linux/mm.h>
-#include <linux/mm_types.h>
 #include <linux/gfp.h>
 #include <linux/page-flags.h>
-#include <linux/nodemask.h>
-#include <linux/hydra_util.h>
+#include <linux/hydra.h>
 #include <asm/pgtable.h>
 #include <asm/pgalloc.h>
-#include <asm/hydra_pti.h>
 
-struct page *repl_alloc_page_on_node(size_t nid, unsigned int order)
+struct page *hydra_alloc_page_on_node(size_t nid, unsigned int order)
 {
 	nodemask_t nm = NODE_MASK_NONE;
 	struct page *p;
@@ -19,82 +16,67 @@ struct page *repl_alloc_page_on_node(size_t nid, unsigned int order)
 	if (p) {
 		p->next_replica = NULL;
 		p->pt_owner_mm = NULL;
-		p->mitosis_tracking = NULL;
 	}
 
 	return p;
 }
 
-pgtable_t repl_pte_alloc_one(struct mm_struct *mm, unsigned long address,
-			     size_t nid)
+bool hydra_try_return_page(struct page *page)
 {
-	struct page *pte;
+	int nid = page_to_nid(page);
+	bool from_cache = PageHydraFromCache(page);
+	struct mm_struct *owner = page->pt_owner_mm;
+	bool count_stats = owner && READ_ONCE(owner->lazy_repl_enabled);
 
-	pte = hydra_cache_pop(nid);
-	if (!pte) {
-		pte = repl_alloc_page_on_node(nid, 0);
-		if (!pte)
-			return NULL;
-	}
+	ClearPageHydraFromCache(page);
+	page->next_replica = NULL;
 
-	if (!pgtable_pte_page_ctor(pte)) {
-		if (!hydra_cache_push(pte, nid))
-			__free_page(pte);
-		return NULL;
-	}
+	if (from_cache && hydra_cache_push(page, nid, count_stats))
+		return true;
 
-	pte->pt_owner_mm = mm;
-	pte->mitosis_tracking = NULL;
-	return pte;
+	return false;
 }
 
-pmd_t *repl_pmd_alloc_one(struct mm_struct *mm, unsigned long addr, size_t nid)
+void hydra_dtor_free_page(struct page *page)
+{
+	hydra_pagetable_dtor(page);
+	hydra_pt_account(page, -1);
+
+	if (hydra_try_return_page(page))
+		return;
+
+	__free_page(page);
+}
+
+struct page *hydra_alloc_pt_page_near(struct mm_struct *mm, gfp_t gfp,
+				      void *parent)
+{
+	int node;
+	struct page *page;
+
+	if (parent && virt_addr_valid(parent))
+		node = page_to_nid(virt_to_page(parent));
+	else
+		node = numa_node_id();
+
+	page = hydra_cache_pop(node, mm && READ_ONCE(mm->lazy_repl_enabled));
+	if (!page)
+		page = alloc_pages_node(node, gfp | __GFP_THISNODE, 0);
+	if (page)
+		page->pt_owner_mm = mm;
+
+	return page;
+}
+
+struct page *hydra_alloc_pt_page(struct mm_struct *mm, gfp_t gfp,
+				 unsigned int order)
 {
 	struct page *page;
 
-	page = hydra_cache_pop(nid);
-	if (!page) {
-		page = repl_alloc_page_on_node(nid, 0);
-		if (!page)
-			return NULL;
-	}
+	page = alloc_pages(gfp, order);
 
-	if (!pgtable_pmd_page_ctor(page)) {
-		if (!hydra_cache_push(page, nid))
-			__free_page(page);
-		return NULL;
-	}
+	if (page)
+		page->pt_owner_mm = mm;
 
-	page->pt_owner_mm = mm;
-	return (pmd_t *)page_address(page);
-}
-
-pud_t *repl_pud_alloc_one(struct mm_struct *mm, unsigned long addr, size_t nid)
-{
-	struct page *page;
-
-	page = hydra_cache_pop(nid);
-	if (!page) {
-		page = repl_alloc_page_on_node(nid, 0);
-		if (!page)
-			return NULL;
-	}
-
-	page->pt_owner_mm = mm;
-	return (pud_t *)page_address(page);
-}
-
-p4d_t *repl_p4d_alloc_one(struct mm_struct *mm, unsigned long addr, size_t nid)
-{
-	struct page *page;
-
-	page = hydra_cache_pop(nid);
-	if (!page) {
-		page = repl_alloc_page_on_node(nid, 0);
-		if (!page)
-			return NULL;
-	}
-
-	page->pt_owner_mm = mm;
-	return (p4d_t *)page_address(page);
+	return page;
 }

@@ -585,7 +585,7 @@ static void migrate_vma_insert_page(struct migrate_vma *migrate,
 	if (!vma_is_anonymous(vma))
 		goto abort;
 
-	pgdp = mm->lazy_repl_enabled ? pgd_offset_node(mm, addr, vma->master_pgd_node) : pgd_offset(mm, addr);
+	pgdp = pgd_offset(mm, addr);
 	p4dp = p4d_alloc(mm, pgdp, addr);
 	if (!p4dp)
 		goto abort;

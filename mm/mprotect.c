@@ -36,9 +36,6 @@
 #include <asm/mmu_context.h>
 #include <asm/tlbflush.h>
 #include <asm/tlb.h>
-#include <linux/hydra_util.h>
-
-
 
 #include "internal.h"
 
@@ -121,7 +118,7 @@ static long change_pte_range(struct mmu_gather *tlb,
 	flush_tlb_batched_pending(vma->vm_mm);
 	arch_enter_lazy_mmu_mode();
 	do {
-		oldpte = pgtable_repl_get_pte(pte);
+		oldpte = *pte;
 		if (pte_present(oldpte)) {
 			pte_t ptent;
 
@@ -538,11 +535,7 @@ static long change_protection_range(struct mmu_gather *tlb,
 	long pages = 0, ret;
 
 	BUG_ON(addr >= end);
-	if (mm->lazy_repl_enabled) {
-		pgd = pgd_offset_node(mm, addr, vma->master_pgd_node);
-	} else {
-		pgd = pgd_offset(mm, addr);
-	}
+	pgd = pgd_offset(mm, addr);
 	tlb_start_vma(tlb, vma);
 	do {
 		next = pgd_addr_end(addr, end);
@@ -586,10 +579,9 @@ long change_protection(struct mmu_gather *tlb,
 	if (is_vm_hugetlb_page(vma))
 		pages = hugetlb_change_protection(vma, start, end, newprot,
 						  cp_flags);
-	else {
+	else
 		pages = change_protection_range(tlb, vma, start, end, newprot,
 						cp_flags);
-    }
 
 	return pages;
 }
@@ -681,7 +673,7 @@ mprotect_fixup(struct vma_iterator *vmi, struct mmu_gather *tlb,
 	pgoff = vma->vm_pgoff + ((start - vma->vm_start) >> PAGE_SHIFT);
 	*pprev = vma_merge(vmi, mm, *pprev, start, end, newflags,
 			   vma->anon_vma, vma->vm_file, pgoff, vma_policy(vma),
-			   vma->vm_userfaultfd_ctx, anon_vma_name(vma), vma->master_pgd_node);
+			   vma->vm_userfaultfd_ctx, anon_vma_name(vma));
 	if (*pprev) {
 		vma = *pprev;
 		VM_WARN_ON((vma->vm_flags ^ newflags) & ~VM_SOFTDIRTY);
@@ -819,13 +811,7 @@ static int do_mprotect_pkey(unsigned long start, size_t len,
 			break;
 		}
 
-		if (vma->vm_mm->lazy_repl_enabled && sysctl_hydra_tlbflush_opt) {
-			pte_t *pte = hydra_find_pte(vma->vm_mm, nstart, vma->master_pgd_node);
-			if (!HYDRA_FIND_BAD(pte)) {
-				nodes_clear(tlb.nodemask);
-				hydra_calculate_tlbflush_nodemask(virt_to_page(pte), &tlb.nodemask);
-			}
-		}
+		tlb.vma = vma;
 
 		/* Does the application expect PROT_READ to imply PROT_EXEC */
 		if (rier && (vma->vm_flags & VM_MAYEXEC))
@@ -880,12 +866,8 @@ static int do_mprotect_pkey(unsigned long start, size_t len,
 		tmp = vma_iter_end(&vmi);
 		nstart = tmp;
 		prot = reqprot;
-
-	tlb.collect_nodemask = 1;
-	tlb_finish_mmu(&tlb);
-	tlb.collect_nodemask = 0;
 	}
-
+	tlb_finish_mmu(&tlb);
 
 	if (!error && tmp < end)
 		error = -ENOMEM;

@@ -1571,6 +1571,18 @@ config AMD_MEM_ENCRYPT_ACTIVE_BY_DEFAULT
 	  activated with the mem_encrypt=on command line option.
 
 # Common NUMA Features
+config HYDRA_NUMA_NODE_COUNT
+	int "Number of NUMA nodes for Hydra page table replication"
+	default 8
+	depends on NUMA && PARAVIRT_XXL
+	help
+	  Sets the number of NUMA nodes that Hydra will maintain
+	  page table replicas for. This value must match the number
+	  of physical NUMA nodes on the system (check with
+	  numactl --hardware). Each mm_struct will contain an array
+	  of this many PGD pointers, and one per-node page table cache
+	  entry will be allocated.
+
 config NUMA
 	bool "NUMA Memory Allocation and Scheduler Support"
 	depends on SMP
@@ -1591,18 +1603,6 @@ config NUMA
 	  kernel on a 64-bit NUMA platform.
 
 	  Otherwise, you should say N.
-
-config HYDRA_NUMA_NODE_COUNT
-	int "Number of NUMA nodes for Hydra page table replication"
-	default 8
-	depends on NUMA && PARAVIRT_XXL
-	help
-	  Sets the number of NUMA nodes that Hydra will maintain
-	  page table replicas for. This value must match the number
-	  of physical NUMA nodes on the system (check with
-	  numactl --hardware). Each mm_struct will contain an array
-	  of this many PGD pointers, and one per-node page table cache
-	  entry will be allocated.
 
 config AMD_NUMA
 	def_bool y

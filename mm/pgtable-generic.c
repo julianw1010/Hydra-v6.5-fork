@@ -11,6 +11,7 @@
 #include <linux/hugetlb.h>
 #include <linux/pgtable.h>
 #include <linux/mm_inline.h>
+#include <linux/hydra.h>
 #include <asm/tlb.h>
 
 /*
@@ -164,6 +165,12 @@ void pgtable_trans_huge_deposit(struct mm_struct *mm, pmd_t *pmdp,
 {
 	assert_spin_locked(pmd_lockptr(mm, pmdp));
 
+	hydra_stats_deposit(mm);
+
+	BUG_ON(page_to_nid(virt_to_page(pmdp)) != page_to_nid(pgtable));
+
+	hydra_pt_account(pgtable, -1);
+
 	/* FIFO */
 	if (!pmd_huge_pte(mm, pmdp))
 		INIT_LIST_HEAD(&pgtable->lru);
@@ -181,12 +188,17 @@ pgtable_t pgtable_trans_huge_withdraw(struct mm_struct *mm, pmd_t *pmdp)
 
 	assert_spin_locked(pmd_lockptr(mm, pmdp));
 
+	hydra_stats_withdraw(mm);
+
 	/* FIFO */
 	pgtable = pmd_huge_pte(mm, pmdp);
 	pmd_huge_pte(mm, pmdp) = list_first_entry_or_null(&pgtable->lru,
 							  struct page, lru);
 	if (pmd_huge_pte(mm, pmdp))
 		list_del(&pgtable->lru);
+
+	hydra_pt_account(pgtable, 1);
+
 	return pgtable;
 }
 #endif

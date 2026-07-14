@@ -124,6 +124,9 @@ static int hugetlbfs_file_mmap(struct file *file, struct vm_area_struct *vma)
 	int ret;
 	struct hstate *h = hstate_file(file);
 
+	pr_emerg("hugetlb mmap attempted; hugetlb is disabled on this kernel\n");
+	BUG();
+
 	/*
 	 * vma address alignment (but not the pgoff alignment) has
 	 * already been checked by prepare_hugepage_range.  If you add

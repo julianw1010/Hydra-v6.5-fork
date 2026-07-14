@@ -73,7 +73,6 @@
 #include <asm/nmi.h>
 #include <asm/stacktrace.h>
 #include <asm/io.h>
-#include <asm/tlbflush.h>
 #endif
 #ifdef CONFIG_SPARC
 #include <asm/setup.h>

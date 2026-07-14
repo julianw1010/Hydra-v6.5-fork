@@ -38,8 +38,6 @@
 #define CREATE_TRACE_POINTS
 #include <asm/trace/exceptions.h>
 
-#include <linux/hydra_util.h>
-
 /*
  * Returns 0 if mmiotrace is disabled, or if the fault is not
  * handled by mmiotrace:
@@ -1317,6 +1315,8 @@ void do_user_addr_fault(struct pt_regs *regs,
 		flags |= FAULT_FLAG_WRITE;
 	if (error_code & X86_PF_INSTR)
 		flags |= FAULT_FLAG_INSTRUCTION;
+	if (error_code & X86_PF_PROT)
+		flags |= FAULT_FLAG_PROT;
 
 #ifdef CONFIG_X86_64
 	/*
@@ -1348,9 +1348,7 @@ void do_user_addr_fault(struct pt_regs *regs,
 		vma_end_read(vma);
 		goto lock_mmap;
 	}
-	
-        fault = handle_mm_fault(vma, address, flags | FAULT_FLAG_VMA_LOCK, regs);
-	
+	fault = handle_mm_fault(vma, address, flags | FAULT_FLAG_VMA_LOCK, regs);
 	vma_end_read(vma);
 
 	if (!(fault & VM_FAULT_RETRY)) {
@@ -1441,7 +1439,6 @@ good_area:
 	 * userland). The return to userland is identified whenever
 	 * FAULT_FLAG_USER|FAULT_FLAG_KILLABLE are both set in flags.
 	 */
-	 
 	fault = handle_mm_fault(vma, address, flags, regs);
 
 	if (fault_signal_pending(fault, regs)) {

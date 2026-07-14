@@ -129,8 +129,25 @@ static inline pgd_t *pgd_offset_pgd(pgd_t *pgd, unsigned long address)
 /*
  * a shortcut to get a pgd_t in a given mm
  */
+struct xarray;
+extern void *xa_load(struct xarray *xa, unsigned long index);
+
+static inline pgd_t *hydra_master_pgd_offset(struct mm_struct *mm,
+					     unsigned long address)
+{
+	void *entry = xa_load(mm->hydra_pud_owner, address >> PUD_SHIFT);
+
+	if (entry)
+		return pgd_offset_pgd(mm->repl_pgd[(unsigned long)entry >> 1],
+				      address);
+	return pgd_offset_pgd(mm->pgd, address);
+}
+
 #ifndef pgd_offset
-#define pgd_offset(mm, address)		pgd_offset_pgd((mm)->pgd, (address))
+#define pgd_offset(mm, address)						\
+	((mm)->lazy_repl_enabled ?					\
+	 hydra_master_pgd_offset((mm), (address)) :			\
+	 pgd_offset_pgd((mm)->pgd, (address)))
 #endif
 
 /*
@@ -138,7 +155,7 @@ static inline pgd_t *pgd_offset_pgd(pgd_t *pgd, unsigned long address)
  * of a process's
  */
 #ifndef pgd_offset_k
-#define pgd_offset_k(address)		pgd_offset_pgd(init_mm.pgd, (address))
+#define pgd_offset_k(address)		pgd_offset(&init_mm, (address))
 #endif
 
 /*
@@ -148,9 +165,15 @@ static inline pgd_t *pgd_offset_pgd(pgd_t *pgd, unsigned long address)
  * address to the pointer in the PTE in the kernel page tables with simple
  * helpers.
  */
-extern pmd_t *pmd_off(struct mm_struct *mm, unsigned long va);
+static inline pmd_t *pmd_off(struct mm_struct *mm, unsigned long va)
+{
+	return pmd_offset(pud_offset(p4d_offset(pgd_offset(mm, va), va), va), va);
+}
 
-extern pmd_t *pmd_off_k(unsigned long va);
+static inline pmd_t *pmd_off_k(unsigned long va)
+{
+	return pmd_offset(pud_offset(p4d_offset(pgd_offset_k(va), va), va), va);
+}
 
 static inline pte_t *virt_to_kpte(unsigned long vaddr)
 {

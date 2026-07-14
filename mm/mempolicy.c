@@ -105,15 +105,7 @@
 
 #include <asm/tlbflush.h>
 #include <asm/tlb.h>
-#include <asm/pgtable.h>
 #include <linux/uaccess.h>
-
-#include <asm/tlbflush.h>
-#include <asm/tlb.h>
-#include <asm/mmu_context.h>
-#include <asm/pgalloc.h>
-
-#include <asm/hydra_pti.h>
 
 #include "internal.h"
 
@@ -825,7 +817,7 @@ static int mbind_range(struct vma_iterator *vmi, struct vm_area_struct *vma,
 	pgoff = vma->vm_pgoff + ((vmstart - vma->vm_start) >> PAGE_SHIFT);
 	merged = vma_merge(vmi, vma->vm_mm, *prev, vmstart, vmend, vma->vm_flags,
 			 vma->anon_vma, vma->vm_file, pgoff, new_pol,
-			 vma->vm_userfaultfd_ctx, anon_vma_name(vma), vma->master_pgd_node);
+			 vma->vm_userfaultfd_ctx, anon_vma_name(vma));
 	if (merged) {
 		*prev = merged;
 		return vma_replace_policy(merged, new_pol);
@@ -1880,10 +1872,12 @@ static int policy_node(gfp_t gfp, struct mempolicy *policy, int nd)
 		 */
 		WARN_ON_ONCE(policy->mode == MPOL_BIND && (gfp & __GFP_THISNODE));
 	}
+
 	if ((policy->mode == MPOL_BIND ||
 	     policy->mode == MPOL_PREFERRED_MANY) &&
 	    policy->home_node != NUMA_NO_NODE)
 		return policy->home_node;
+
 	return nd;
 }
 
@@ -2374,9 +2368,10 @@ unsigned long alloc_pages_bulk_array_mempolicy(gfp_t gfp,
 		return alloc_pages_bulk_array_interleave(gfp, pol,
 							 nr_pages, page_array);
 
-        if (pol->mode == MPOL_PREFERRED_MANY)
+	if (pol->mode == MPOL_PREFERRED_MANY)
 		return alloc_pages_bulk_array_preferred_many(gfp,
 				numa_node_id(), pol, nr_pages, page_array);
+
 	return __alloc_pages_bulk(gfp, policy_node(gfp, pol, numa_node_id()),
 				  policy_nodemask(gfp, pol), nr_pages, NULL,
 				  page_array);

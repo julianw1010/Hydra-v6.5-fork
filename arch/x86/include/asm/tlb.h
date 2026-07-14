@@ -16,18 +16,17 @@ static inline void tlb_flush(struct mmu_gather *tlb)
 		start = tlb->start;
 		end = tlb->end;
 
-        if (tlb->collect_nodemask) {
-            flush_tlb_mm_node_range(tlb->mm, start, end, stride_shift, tlb->freed_tables, &tlb->nodemask);
-        } else if (tlb->vma) {
-            flush_tlb_vma_range(tlb->vma, start, end, stride_shift, tlb->freed_tables);
-        } else {
-	    flush_tlb_mm_range(tlb->mm, start, end, stride_shift, tlb->freed_tables);
-        }
+		if (tlb->collect_nodemask) {
+			flush_tlb_mm_node_range(tlb->mm, start, end, stride_shift, tlb->freed_tables, &tlb->nodemask);
+		} else if (tlb->vma) {
+			flush_tlb_vma_range(tlb->vma, start, end, stride_shift, tlb->freed_tables);
+		} else {
+			flush_tlb_mm_range(tlb->mm, start, end, stride_shift, tlb->freed_tables);
+		}
 	} else {
-	    flush_tlb_mm_range(tlb->mm, start, end, stride_shift, tlb->freed_tables);
-    }
+		flush_tlb_mm_range(tlb->mm, start, end, stride_shift, tlb->freed_tables);
+	}
 }
-
 
 /*
  * While x86 architecture in general requires an IPI to perform TLB
@@ -38,9 +37,19 @@ static inline void tlb_flush(struct mmu_gather *tlb)
  * below 'ifdef CONFIG_MMU_GATHER_RCU_TABLE_FREE' in include/asm-generic/tlb.h
  * for more details.
  */
+struct page;
+bool hydra_cache_return_table(struct page *page);
+void hydra_pagetable_dtor(struct page *page);
+
 static inline void __tlb_remove_table(void *table)
 {
-	free_page_and_swap_cache(table);
+	struct page *page = table;
+
+	if (hydra_cache_return_table(page))
+		return;
+
+	hydra_pagetable_dtor(page);
+	free_page_and_swap_cache(page);
 }
 
 #endif /* _ASM_X86_TLB_H */

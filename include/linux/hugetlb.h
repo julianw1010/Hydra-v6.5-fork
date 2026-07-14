@@ -240,8 +240,7 @@ pte_t *huge_pte_alloc(struct mm_struct *mm, struct vm_area_struct *vma,
  * access.
  */
 pte_t *huge_pte_offset(struct mm_struct *mm,
-		       unsigned long addr, unsigned long sz,
-		       struct vm_area_struct *vma);
+		       unsigned long addr, unsigned long sz);
 unsigned long hugetlb_mask_last_page(struct hstate *h);
 int huge_pmd_unshare(struct mm_struct *mm, struct vm_area_struct *vma,
 				unsigned long addr, pte_t *ptep);
@@ -415,8 +414,7 @@ static inline int hugetlb_mfill_atomic_pte(pte_t *dst_pte,
 #endif /* CONFIG_USERFAULTFD */
 
 static inline pte_t *huge_pte_offset(struct mm_struct *mm, unsigned long addr,
-					unsigned long sz,
-					struct vm_area_struct *vma)
+					unsigned long sz)
 {
 	return NULL;
 }
@@ -1287,7 +1285,7 @@ hugetlb_walk(struct vm_area_struct *vma, unsigned long addr, unsigned long sz)
 			     !lockdep_is_held(
 				 &vma->vm_file->f_mapping->i_mmap_rwsem));
 #endif
-	return huge_pte_offset(vma->vm_mm, addr, sz, vma);
+	return huge_pte_offset(vma->vm_mm, addr, sz);
 }
 
 #endif /* _LINUX_HUGETLB_H */

@@ -136,8 +136,8 @@ enum pageflags {
 	PG_arch_2,
 	PG_arch_3,
 #endif
-        PG_hydra_from_cache,
-	PG_hydra_chain_locked,        
+	PG_hydra_from_cache,
+	PG_hydra_chain_locked,
 	__NR_PAGEFLAGS,
 
 	PG_readahead = PG_reclaim,
@@ -465,8 +465,8 @@ static inline int TestClearPage##uname(struct page *page) { return 0; }
 	TESTSETFLAG_FALSE(uname, lname) TESTCLEARFLAG_FALSE(uname, lname)
 
 __PAGEFLAG(Locked, locked, PF_NO_TAIL)
-PAGEFLAG(Waiters, waiters, PF_ONLY_HEAD)
 PAGEFLAG(HydraFromCache, hydra_from_cache, PF_ANY)
+PAGEFLAG(Waiters, waiters, PF_ONLY_HEAD)
 PAGEFLAG(Error, error, PF_NO_TAIL) TESTCLEARFLAG(Error, error, PF_NO_TAIL)
 PAGEFLAG(Referenced, referenced, PF_HEAD)
 	TESTCLEARFLAG(Referenced, referenced, PF_HEAD)

@@ -84,8 +84,6 @@
 
 #include "internal.h"
 
-#include <linux/hydra_util.h>
-
 static struct kmem_cache *anon_vma_cachep;
 static struct kmem_cache *anon_vma_chain_cachep;
 
@@ -775,18 +773,14 @@ unsigned long page_address_in_vma(struct page *page, struct vm_area_struct *vma)
  * NULL if it doesn't exist.  No guarantees / checks on what the pmd_t*
  * represents.
  */
-pmd_t *mm_find_pmd(struct mm_struct *mm, struct vm_area_struct *vma,
-		   unsigned long address)
+pmd_t *mm_find_pmd(struct mm_struct *mm, unsigned long address)
 {
 	pgd_t *pgd;
 	p4d_t *p4d;
 	pud_t *pud;
 	pmd_t *pmd = NULL;
 
-	if (mm->lazy_repl_enabled)
-		pgd = pgd_offset_node(mm, address, vma->master_pgd_node);
-	else
-		pgd = pgd_offset(mm, address);
+	pgd = pgd_offset(mm, address);
 	if (!pgd_present(*pgd))
 		goto out;
 
@@ -799,7 +793,6 @@ pmd_t *mm_find_pmd(struct mm_struct *mm, struct vm_area_struct *vma,
 		goto out;
 
 	pmd = pmd_offset(pud, address);
-
 out:
 	return pmd;
 }
@@ -979,9 +972,8 @@ static int page_vma_mkclean_one(struct page_vma_mapped_walk *pvmw)
 #ifdef CONFIG_TRANSPARENT_HUGEPAGE
 			pmd_t *pmd = pvmw->pmd;
 			pmd_t entry;
-			pmd_t cur_pmd = hydra_get_pmd(pmd);
 
-			if (!pmd_dirty(cur_pmd) && !pmd_write(cur_pmd))
+			if (!pmd_dirty(*pmd) && !pmd_write(*pmd))
 				continue;
 
 			flush_cache_range(vma, address,
@@ -1460,14 +1452,12 @@ static bool try_to_unmap_one(struct folio *folio, struct vm_area_struct *vma,
 		     unsigned long address, void *arg)
 {
 	struct mm_struct *mm = vma->vm_mm;
-
 	DEFINE_FOLIO_VMA_WALK(pvmw, folio, vma, address, 0);
 	pte_t pteval;
 	struct page *subpage;
 	bool anon_exclusive, ret = true;
 	struct mmu_notifier_range range;
 	enum ttu_flags flags = (enum ttu_flags)(long)arg;
-
 
 	/*
 	 * When racing against e.g. zap_pte_range() on another cpu,
@@ -1596,7 +1586,7 @@ static bool try_to_unmap_one(struct folio *folio, struct vm_area_struct *vma,
 
 				set_tlb_ubc_flush_pending(mm, pteval);
 			} else {
-                pteval = ptep_clear_flush(vma, address, pvmw.pte);
+				pteval = ptep_clear_flush(vma, address, pvmw.pte);
 			}
 		}
 
