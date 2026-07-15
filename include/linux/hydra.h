@@ -144,8 +144,6 @@ void hydra_pagetable_dtor(struct page *page);
 bool hydra_cache_return_table(struct page *page);
 struct page *hydra_alloc_pt_page_near(struct mm_struct *mm, gfp_t gfp,
 				      void *parent);
-struct page *hydra_alloc_pt_page(struct mm_struct *mm, gfp_t gfp,
-				 unsigned int order);
 
 #include <linux/list.h>
 #include <linux/sched.h>

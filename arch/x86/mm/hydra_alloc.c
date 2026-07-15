@@ -67,16 +67,3 @@ struct page *hydra_alloc_pt_page_near(struct mm_struct *mm, gfp_t gfp,
 
 	return page;
 }
-
-struct page *hydra_alloc_pt_page(struct mm_struct *mm, gfp_t gfp,
-				 unsigned int order)
-{
-	struct page *page;
-
-	page = alloc_pages(gfp, order);
-
-	if (page)
-		page->pt_owner_mm = mm;
-
-	return page;
-}
