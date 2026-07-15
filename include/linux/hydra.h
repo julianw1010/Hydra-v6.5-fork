@@ -190,7 +190,6 @@ struct hydra_stats {
 
 	atomic_long_t tlb_shootdowns;
 	atomic_long_t tlb_shootdowns_saved;
-	atomic_long_t tlb_broadcasts;
 
 	atomic_long_t numa_migrate_4k[NUMA_NODE_COUNT][NUMA_NODE_COUNT];
 	atomic_long_t numa_migrate_2m[NUMA_NODE_COUNT][NUMA_NODE_COUNT];
@@ -247,14 +246,6 @@ static inline void hydra_stats_tlb(struct mm_struct *mm, long sent,
 		atomic_long_add(sent, &s->tlb_shootdowns);
 	if (broadcast > sent)
 		atomic_long_add(broadcast - sent, &s->tlb_shootdowns_saved);
-}
-
-static inline void hydra_stats_tlb_broadcast(struct mm_struct *mm, long count)
-{
-	struct hydra_stats *s = mm->hydra_stats;
-
-	if (s && count > 0)
-		atomic_long_add(count, &s->tlb_broadcasts);
 }
 
 static inline void hydra_stats_thp_split(struct mm_struct *mm)

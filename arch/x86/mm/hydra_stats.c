@@ -381,10 +381,6 @@ static void hydra_stats_print(struct seq_file *m, struct hydra_stats *s,
 			       tlb_sent + tlb_saved);
 	}
 
-	hydra_print_section(m, "TLB broadcasts (INVLPGB, no IPIs)");
-	hydra_print_kv(m, "Total INVLPGB instructions",
-		       atomic_long_read(&s->tlb_broadcasts));
-
 	hydra_print_section(m,
 		"autoNUMA migrations: 4KB base pages  [rows = source node, cols = dest node]");
 	hydra_print_node_matrix(m, s->numa_migrate_4k);
