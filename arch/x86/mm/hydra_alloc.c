@@ -52,14 +52,15 @@ struct page *hydra_alloc_pt_page_near(struct mm_struct *mm, gfp_t gfp,
 				      void *parent)
 {
 	int node;
-	struct page *page;
+	struct page *page = NULL;
 
 	if (parent && virt_addr_valid(parent))
 		node = page_to_nid(virt_to_page(parent));
 	else
 		node = numa_node_id();
 
-	page = hydra_cache_pop(node, mm && READ_ONCE(mm->lazy_repl_enabled));
+	if (mm && READ_ONCE(mm->lazy_repl_enabled))
+		page = hydra_cache_pop(node, true);
 	if (!page)
 		page = alloc_pages_node(node, gfp | __GFP_THISNODE, 0);
 	if (page)
