@@ -166,6 +166,9 @@ struct hydra_stats {
 	int master_node;
 	int ever_enabled;
 
+	unsigned long start_jiffies;
+	unsigned long end_jiffies;
+
 	atomic_long_t thp_split;
 	atomic_long_t thp_collapse;
 	atomic_long_t deposits;
@@ -179,12 +182,16 @@ struct hydra_stats {
 	atomic_long_t replica_faults_present;
 	atomic_long_t replica_serviced_on_master;
 
+	atomic_long_t faults_node[NUMA_NODE_COUNT];
+
 	atomic_long_t pte_entries_copied;
 	atomic_long_t pte_entries_prefetched;
 	atomic_long_t pte_copy_faults;
 	atomic_long_t pmd_entries_copied;
 	atomic_long_t pmd_entries_prefetched;
 	atomic_long_t pmd_copy_faults;
+
+	atomic_long_t pt_writes[HYDRA_PT_NR_LEVELS];
 
 	atomic_long_t tlb_shootdowns;
 	atomic_long_t tlb_shootdowns_saved;
@@ -203,6 +210,7 @@ struct hydra_stats *hydra_stats_attach(struct mm_struct *mm);
 void hydra_stats_mark_enabled(struct mm_struct *mm, int master_node);
 void hydra_stats_detach(struct mm_struct *mm);
 void hydra_pt_account(struct page *page, int delta);
+void hydra_stats_pt_write(void *tablep, int level);
 void hydra_vma_attach(struct vm_area_struct *vma);
 void hydra_vma_detach(struct vm_area_struct *vma);
 void hydra_vma_chown(struct vm_area_struct *vma, int node);
@@ -282,6 +290,7 @@ struct hydra_fault_ctx {
 	bool replica;
 	bool write;
 	bool present;
+	int node;
 	unsigned int saved;
 };
 
@@ -291,8 +300,9 @@ static inline struct hydra_fault_ctx hydra_stats_fault_begin(struct mm_struct *m
 	struct hydra_fault_ctx c = { .s = mm->hydra_stats };
 
 	if (c.s) {
+		c.node = numa_node_id();
 		c.replica = mm->lazy_repl_enabled &&
-			    (numa_node_id() != vma->master_pgd_node);
+			    (c.node != vma->master_pgd_node);
 		c.write = !!(flags & FAULT_FLAG_WRITE);
 		c.present = !!(flags & FAULT_FLAG_PROT);
 		if (c.replica) {
@@ -325,6 +335,8 @@ static inline void hydra_stats_fault_end(struct hydra_fault_ctx c)
 		if (c.present)
 			atomic_long_inc(&s->master_faults_present);
 	}
+	if (c.node >= 0 && c.node < NUMA_NODE_COUNT)
+		atomic_long_inc(&s->faults_node[c.node]);
 }
 
 static inline void hydra_stats_numa(struct mm_struct *mm, bool huge,

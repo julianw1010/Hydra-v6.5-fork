@@ -37,6 +37,8 @@ static void hydra_set_wrprotect_pte_entry(pte_t *ptep)
 	if (!ptep)
 		return;
 
+	hydra_stats_pt_write(ptep, HYDRA_PT_PTE);
+
 	hydra_wrprotect_pte_one(ptep);
 
 	if (!static_branch_unlikely(&hydra_repl_ever_enabled))
@@ -70,6 +72,8 @@ static void hydra_set_wrprotect_pmd_entry(pmd_t *pmdp)
 	if (!pmdp)
 		return;
 
+	hydra_stats_pt_write(pmdp, HYDRA_PT_PMD);
+
 	hydra_wrprotect_pmd_one(pmdp);
 
 	if (!static_branch_unlikely(&hydra_repl_ever_enabled))
@@ -101,6 +105,7 @@ void hydra_set_pte(pte_t *ptep, pte_t pteval)
 	unsigned long offset;
 	pte_t repl_val;
 
+	hydra_stats_pt_write(ptep, HYDRA_PT_PTE);
 	native_set_pte(ptep, pteval);
 
 	if (!static_branch_unlikely(&hydra_repl_ever_enabled))
@@ -171,6 +176,8 @@ pte_t hydra_ptep_get_and_clear(struct mm_struct *mm, pte_t *ptep)
 	if (!ptep)
 		return __pte(0);
 
+	hydra_stats_pt_write(ptep, HYDRA_PT_PTE);
+
 	if (!static_branch_unlikely(&hydra_repl_ever_enabled))
 		return native_ptep_get_and_clear(ptep);
 
@@ -213,6 +220,8 @@ int hydra_ptep_test_and_clear_young(struct vm_area_struct *vma,
 	if (!ptep)
 		return 0;
 
+	hydra_stats_pt_write(ptep, HYDRA_PT_PTE);
+
 	if (pte_young(*ptep))
 		young = test_and_clear_bit(_PAGE_BIT_ACCESSED,
 					   (unsigned long *)&ptep->pte);
@@ -252,6 +261,7 @@ void hydra_set_pmd(pmd_t *pmdp, pmd_t pmd)
 	unsigned long offset;
 	pmd_t repl_val;
 
+	hydra_stats_pt_write(pmdp, HYDRA_PT_PMD);
 	native_set_pmd(pmdp, pmd);
 
 	if (!static_branch_unlikely(&hydra_repl_ever_enabled))
@@ -280,6 +290,27 @@ void hydra_set_pmd(pmd_t *pmdp, pmd_t pmd)
 	}
 	rcu_read_unlock();
 }
+
+void hydra_set_pud(pud_t *pudp, pud_t pud)
+{
+	hydra_stats_pt_write(pudp, HYDRA_PT_PUD);
+	native_set_pud(pudp, pud);
+}
+
+void hydra_set_p4d(p4d_t *p4dp, p4d_t p4d)
+{
+	hydra_stats_pt_write(p4dp, pgtable_l5_enabled() ?
+			     HYDRA_PT_P4D : HYDRA_PT_PGD);
+	native_set_p4d(p4dp, p4d);
+}
+
+#if CONFIG_PGTABLE_LEVELS >= 5
+void hydra_set_pgd(pgd_t *pgdp, pgd_t pgd)
+{
+	hydra_stats_pt_write(pgdp, HYDRA_PT_PGD);
+	native_set_pgd(pgdp, pgd);
+}
+#endif
 
 pmd_t hydra_get_pmd(pmd_t *pmdp)
 {
@@ -327,6 +358,8 @@ pmd_t hydra_pmdp_get_and_clear(struct mm_struct *mm, pmd_t *pmdp)
 	if (!pmdp)
 		return __pmd(0);
 
+	hydra_stats_pt_write(pmdp, HYDRA_PT_PMD);
+
 	if (!static_branch_unlikely(&hydra_repl_ever_enabled))
 		return native_pmdp_get_and_clear(pmdp);
 
@@ -369,6 +402,8 @@ int hydra_pmdp_test_and_clear_young(struct vm_area_struct *vma,
 	if (!pmdp)
 		return 0;
 
+	hydra_stats_pt_write(pmdp, HYDRA_PT_PMD);
+
 	if (pmd_young(*pmdp))
 		young = test_and_clear_bit(_PAGE_BIT_ACCESSED,
 					   (unsigned long *)pmdp);
@@ -408,6 +443,8 @@ pmd_t hydra_pmdp_establish(pmd_t *pmdp, pmd_t pmd)
 	unsigned long offset;
 	pmd_t old, repl_val;
 	pmdval_t flags = 0;
+
+	hydra_stats_pt_write(pmdp, HYDRA_PT_PMD);
 
 	if (IS_ENABLED(CONFIG_SMP))
 		old = xchg(pmdp, pmd);

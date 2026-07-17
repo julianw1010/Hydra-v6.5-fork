@@ -325,7 +325,7 @@ struct paravirt_patch_template pv_ops = {
 	.mmu.ptep_modify_prot_start	= __ptep_modify_prot_start,
 	.mmu.ptep_modify_prot_commit	= __ptep_modify_prot_commit,
 
-	.mmu.set_pud		= native_set_pud,
+	.mmu.set_pud		= hydra_set_pud,
 
 	.mmu.pmd_val		= PTE_IDENT,
 	.mmu.make_pmd		= PTE_IDENT,
@@ -333,13 +333,13 @@ struct paravirt_patch_template pv_ops = {
 	.mmu.pud_val		= PTE_IDENT,
 	.mmu.make_pud		= PTE_IDENT,
 
-	.mmu.set_p4d		= native_set_p4d,
+	.mmu.set_p4d		= hydra_set_p4d,
 
 #if CONFIG_PGTABLE_LEVELS >= 5
 	.mmu.p4d_val		= PTE_IDENT,
 	.mmu.make_p4d		= PTE_IDENT,
 
-	.mmu.set_pgd		= native_set_pgd,
+	.mmu.set_pgd		= hydra_set_pgd,
 #endif /* CONFIG_PGTABLE_LEVELS >= 5 */
 
 	.mmu.pte_val		= PTE_IDENT,
