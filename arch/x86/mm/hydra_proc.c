@@ -223,9 +223,29 @@ static const struct proc_ops hydra_status_ops = {
 	.proc_release	= seq_release,
 };
 
+static ssize_t hydra_history_write(struct file *file, const char __user *ubuf,
+				  size_t count, loff_t *ppos)
+{
+	long val;
+	int ret, freed;
+
+	ret = hydra_proc_parse_long(ubuf, count, &val);
+	if (ret)
+		return ret;
+
+	if (val != -1)
+		return -EINVAL;
+
+	freed = hydra_stats_clear_history();
+	pr_info("HYDRA: history cleared %d records\n", freed);
+
+	return count;
+}
+
 static const struct proc_ops hydra_history_ops = {
 	.proc_open	= hydra_history_open,
 	.proc_read	= seq_read,
+	.proc_write	= hydra_history_write,
 	.proc_lseek	= seq_lseek,
 	.proc_release	= seq_release,
 };
@@ -250,7 +270,7 @@ static int __init hydra_proc_init(void)
 	if (!proc_create("status", 0444, hydra_dir, &hydra_status_ops))
 		goto fail;
 
-	if (!proc_create("history", 0444, hydra_dir, &hydra_history_ops))
+	if (!proc_create("history", 0644, hydra_dir, &hydra_history_ops))
 		goto fail;
 
 	return 0;

@@ -208,6 +208,7 @@ void hydra_vma_detach(struct vm_area_struct *vma);
 void hydra_vma_chown(struct vm_area_struct *vma, int node);
 int hydra_status_open(struct inode *inode, struct file *file);
 int hydra_history_open(struct inode *inode, struct file *file);
+int hydra_stats_clear_history(void);
 
 static inline void hydra_stats_copied_pte(struct mm_struct *mm, long copied)
 {

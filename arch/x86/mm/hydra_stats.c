@@ -87,6 +87,22 @@ void hydra_stats_detach(struct mm_struct *mm)
 	spin_unlock(&hydra_stats_lock);
 }
 
+int hydra_stats_clear_history(void)
+{
+	struct hydra_stats *s, *tmp;
+	int freed = 0;
+
+	spin_lock(&hydra_stats_lock);
+	list_for_each_entry_safe(s, tmp, &hydra_hist_list, list) {
+		list_del(&s->list);
+		kfree(s);
+		freed++;
+	}
+	spin_unlock(&hydra_stats_lock);
+
+	return freed;
+}
+
 static void hydra_bump_max(atomic_long_t *maxp, long cur)
 {
 	long mx = atomic_long_read(maxp);
