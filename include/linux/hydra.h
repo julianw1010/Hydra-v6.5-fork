@@ -192,6 +192,7 @@ struct hydra_stats {
 	atomic_long_t pmd_copy_faults;
 
 	atomic_long_t pt_writes[HYDRA_PT_NR_LEVELS];
+	atomic_long_t pt_pages[HYDRA_PT_NR_LEVELS];
 
 	atomic_long_t tlb_shootdowns;
 	atomic_long_t tlb_shootdowns_saved;

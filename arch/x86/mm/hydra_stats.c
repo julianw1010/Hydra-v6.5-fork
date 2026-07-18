@@ -163,10 +163,23 @@ void hydra_pt_account(struct page *page, int delta)
 	hydra_pt_account_mm(page, delta);
 }
 
+static long hydra_ring_len(struct page *base)
+{
+	struct page *cur;
+	long n = 1;
+
+	rcu_read_lock();
+	for (cur = base->next_replica; cur && cur != base; cur = cur->next_replica)
+		n++;
+	rcu_read_unlock();
+	return n;
+}
+
 void hydra_stats_pt_write(void *tablep, int level)
 {
 	struct mm_struct *mm;
 	struct hydra_stats *s;
+	struct page *base;
 
 	if (!static_branch_unlikely(&hydra_repl_ever_enabled))
 		return;
@@ -174,12 +187,15 @@ void hydra_stats_pt_write(void *tablep, int level)
 		return;
 	if (!virt_addr_valid(tablep))
 		return;
-	mm = READ_ONCE(virt_to_page(tablep)->pt_owner_mm);
+	base = virt_to_page(tablep);
+	mm = READ_ONCE(base->pt_owner_mm);
 	if (!mm)
 		return;
 	s = mm->hydra_stats;
-	if (s)
+	if (s) {
 		atomic_long_inc(&s->pt_writes[level]);
+		atomic_long_add(hydra_ring_len(base), &s->pt_pages[level]);
+	}
 }
 
 void hydra_vma_attach(struct vm_area_struct *vma)
@@ -429,17 +445,26 @@ static void hydra_stats_print(struct seq_file *m, struct hydra_stats *s,
 		hydra_print_ratio(m, "PMD entries per copy fault", mc, mff);
 	}
 
-	hydra_print_section(m, "Page-table entry writes");
-	hydra_print_kv(m, "PGD entry writes",
-		       atomic_long_read(&s->pt_writes[HYDRA_PT_PGD]));
-	hydra_print_kv(m, "P4D entry writes",
-		       atomic_long_read(&s->pt_writes[HYDRA_PT_P4D]));
-	hydra_print_kv(m, "PUD entry writes",
-		       atomic_long_read(&s->pt_writes[HYDRA_PT_PUD]));
-	hydra_print_kv(m, "PMD entry writes",
-		       atomic_long_read(&s->pt_writes[HYDRA_PT_PMD]));
-	hydra_print_kv(m, "PTE entry writes",
-		       atomic_long_read(&s->pt_writes[HYDRA_PT_PTE]));
+	{
+		char buf[24];
+		int lvl;
+
+		hydra_print_section(m,
+			"Page-table entry modifications + replica fan-out (all ops)  [rows = level]");
+		seq_puts(m,
+			 "  (writes = set/clear/wrprotect/young calls; pages = replica table pages touched)\n");
+		seq_printf(m, "      %-6s %14s %14s %16s\n",
+			   "level", "writes", "pages", "avg pages/write");
+		for (lvl = 0; lvl < HYDRA_PT_NR_LEVELS; lvl++) {
+			long writes = atomic_long_read(&s->pt_writes[lvl]);
+			long pages = atomic_long_read(&s->pt_pages[lvl]);
+			long h = writes ? (pages * 100 + writes / 2) / writes : 0;
+
+			scnprintf(buf, sizeof(buf), "%ld.%02ld", h / 100, h % 100);
+			seq_printf(m, "      %-6s %14ld %14ld %16s\n",
+				   hydra_level_name[lvl], writes, pages, buf);
+		}
+	}
 
 	{
 		long tlb_sent = atomic_long_read(&s->tlb_shootdowns);
