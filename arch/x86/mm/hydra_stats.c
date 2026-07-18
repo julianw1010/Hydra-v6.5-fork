@@ -163,41 +163,6 @@ void hydra_pt_account(struct page *page, int delta)
 	hydra_pt_account_mm(page, delta);
 }
 
-static long hydra_ring_len(struct page *base)
-{
-	struct page *cur;
-	long n = 1;
-
-	rcu_read_lock();
-	for (cur = base->next_replica; cur && cur != base; cur = cur->next_replica)
-		n++;
-	rcu_read_unlock();
-	return n;
-}
-
-void hydra_stats_pt_write(void *tablep, int level)
-{
-	struct mm_struct *mm;
-	struct hydra_stats *s;
-	struct page *base;
-
-	if (!static_branch_unlikely(&hydra_repl_ever_enabled))
-		return;
-	if (level < 0 || level >= HYDRA_PT_NR_LEVELS)
-		return;
-	if (!virt_addr_valid(tablep))
-		return;
-	base = virt_to_page(tablep);
-	mm = READ_ONCE(base->pt_owner_mm);
-	if (!mm)
-		return;
-	s = mm->hydra_stats;
-	if (s) {
-		atomic_long_inc(&s->pt_writes[level]);
-		atomic_long_add(hydra_ring_len(base), &s->pt_pages[level]);
-	}
-}
-
 void hydra_vma_attach(struct vm_area_struct *vma)
 {
 	struct mm_struct *mm = vma->vm_mm;

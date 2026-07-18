@@ -211,13 +211,33 @@ struct hydra_stats *hydra_stats_attach(struct mm_struct *mm);
 void hydra_stats_mark_enabled(struct mm_struct *mm, int master_node);
 void hydra_stats_detach(struct mm_struct *mm);
 void hydra_pt_account(struct page *page, int delta);
-void hydra_stats_pt_write(void *tablep, int level);
 void hydra_vma_attach(struct vm_area_struct *vma);
 void hydra_vma_detach(struct vm_area_struct *vma);
 void hydra_vma_chown(struct vm_area_struct *vma, int node);
 int hydra_status_open(struct inode *inode, struct file *file);
 int hydra_history_open(struct inode *inode, struct file *file);
 int hydra_stats_clear_history(void);
+
+static inline void hydra_stats_pt_write(void *tablep, int level, long pages)
+{
+	struct mm_struct *mm;
+	struct hydra_stats *s;
+
+	if (!static_branch_unlikely(&hydra_repl_ever_enabled))
+		return;
+	if (level < 0 || level >= HYDRA_PT_NR_LEVELS)
+		return;
+	if (!virt_addr_valid(tablep))
+		return;
+	mm = READ_ONCE(virt_to_page(tablep)->pt_owner_mm);
+	if (!mm)
+		return;
+	s = mm->hydra_stats;
+	if (!s)
+		return;
+	atomic_long_inc(&s->pt_writes[level]);
+	atomic_long_add(pages, &s->pt_pages[level]);
+}
 
 static inline void hydra_stats_copied_pte(struct mm_struct *mm, long copied)
 {
