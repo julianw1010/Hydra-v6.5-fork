@@ -143,3 +143,34 @@ void hydra_fixup_pud_nodes(struct mm_struct *mm,
 		cur = find_vma(mm, pud_boundary);
 	}
 }
+
+static bool hydra_pud_span_occupied(struct mm_struct *mm, unsigned long addr,
+				    unsigned long len)
+{
+	unsigned long start = addr & PUD_MASK;
+	unsigned long end = ALIGN(addr + len, PUD_SIZE);
+
+	return find_vma_intersection(mm, start, end) != NULL;
+}
+
+unsigned long hydra_vm_unmapped_pud_area(struct vm_unmapped_area_info *info)
+{
+	struct vm_unmapped_area_info probe = *info;
+	unsigned long addr;
+
+	for (;;) {
+		addr = vm_unmapped_area(&probe);
+		if (IS_ERR_VALUE(addr))
+			break;
+
+		if (!hydra_pud_span_occupied(current->mm, addr, probe.length))
+			return addr;
+
+		if (probe.flags & VM_UNMAPPED_AREA_TOPDOWN)
+			probe.high_limit = addr;
+		else
+			probe.low_limit = ALIGN(addr + 1, PUD_SIZE);
+	}
+
+	return vm_unmapped_area(info);
+}

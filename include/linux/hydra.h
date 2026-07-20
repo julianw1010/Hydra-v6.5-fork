@@ -32,6 +32,7 @@ void hydra_pud_owner_claim(struct mm_struct *mm, unsigned long start,
 			   unsigned long end, int node);
 void hydra_pud_owner_stamp(struct mm_struct *mm, unsigned long start,
 			   unsigned long end, int node);
+unsigned long hydra_vm_unmapped_pud_area(struct vm_unmapped_area_info *info);
 
 #define HYDRA_WALK_NONE ((void *)0x1)
 
