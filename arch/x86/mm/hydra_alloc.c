@@ -5,33 +5,15 @@
 #include <asm/pgtable.h>
 #include <asm/pgalloc.h>
 
-struct page *hydra_alloc_page_on_node(size_t nid, unsigned int order)
-{
-	nodemask_t nm = NODE_MASK_NONE;
-	struct page *p;
-
-	node_set(nid, nm);
-	p = __alloc_pages((GFP_KERNEL_ACCOUNT | __GFP_ZERO | __GFP_THISNODE), order, nid, &nm);
-
-	if (p) {
-		p->next_replica = NULL;
-		p->pt_owner_mm = NULL;
-	}
-
-	return p;
-}
-
 bool hydra_try_return_page(struct page *page)
 {
 	int nid = page_to_nid(page);
 	bool from_cache = PageHydraFromCache(page);
-	struct mm_struct *owner = page->pt_owner_mm;
-	bool count_stats = owner && READ_ONCE(owner->lazy_repl_enabled);
 
 	ClearPageHydraFromCache(page);
 	page->next_replica = NULL;
 
-	if (from_cache && hydra_cache_push(page, nid, count_stats))
+	if (from_cache && hydra_cache_push(page, nid))
 		return true;
 
 	return false;
@@ -60,7 +42,7 @@ struct page *hydra_alloc_pt_page_near(struct mm_struct *mm, gfp_t gfp,
 		node = numa_node_id();
 
 	if (mm && READ_ONCE(mm->lazy_repl_enabled))
-		page = hydra_cache_pop(node, true);
+		page = hydra_cache_pop(node);
 	if (!page)
 		page = alloc_pages_node(node, gfp | __GFP_THISNODE, 0);
 	if (page)

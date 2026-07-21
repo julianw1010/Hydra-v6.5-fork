@@ -55,10 +55,6 @@ early_param("userpte", setup_userpte);
 static void hydra_free_tlb_page(struct mmu_gather *tlb, struct page *page)
 {
 	hydra_pt_account(page, -1);
-
-	if (PageHydraFromCache(page))
-		hydra_cache_count_return(page->pt_owner_mm, page_to_nid(page));
-
 	page->pt_owner_mm = NULL;
 	tlb_remove_table(tlb, page);
 }

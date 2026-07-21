@@ -874,6 +874,8 @@ static int show_smap(struct seq_file *m, void *v)
 	seq_printf(m, "THPeligible:    %d\n",
 		   hugepage_vma_check(vma, vma->vm_flags, true, false, true));
 
+	seq_printf(m, "HydraMaster:    %8lu\n", vma->master_pgd_node);
+
 	if (arch_pkeys_enabled())
 		seq_printf(m, "ProtectionKey:  %8u\n", vma_pkey(vma));
 	show_smap_vma_flags(m, vma);

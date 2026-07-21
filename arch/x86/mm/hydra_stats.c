@@ -232,37 +232,10 @@ static void hydra_print_section(struct seq_file *m, const char *name)
 	seq_puts(m, "  ------------------------------------------------------------------\n");
 }
 
-static void hydra_print_kv(struct seq_file *m, const char *label, long val)
+static void hydra_print_val(struct seq_file *m, int pad, const char *label,
+			    long val)
 {
-	seq_printf(m, "    %-40s %12ld\n", label, val);
-}
-
-static void hydra_print_sub(struct seq_file *m, const char *label, long val)
-{
-	seq_printf(m, "      %-38s %12ld\n", label, val);
-}
-
-static void hydra_print_group(struct seq_file *m, const char *name)
-{
-	seq_printf(m, "      %s:\n", name);
-}
-
-static void hydra_print_sub2(struct seq_file *m, const char *label, long val)
-{
-	seq_printf(m, "        %-36s %12ld\n", label, val);
-}
-
-static void hydra_print_sub_pct(struct seq_file *m, const char *label,
-				long val, long total)
-{
-	if (total > 0) {
-		long p10 = (val * 1000 + total / 2) / total;
-
-		seq_printf(m, "      %-38s %12ld   (%ld.%ld%%)\n",
-			   label, val, p10 / 10, p10 % 10);
-	} else {
-		seq_printf(m, "      %-38s %12ld\n", label, val);
-	}
+	seq_printf(m, "%*s%-*s %12ld\n", pad, "", 44 - pad, label, val);
 }
 
 static void hydra_print_ratio(struct seq_file *m, const char *label,
@@ -290,19 +263,27 @@ static void hydra_print_node_header(struct seq_file *m)
 	seq_putc(m, '\n');
 }
 
+static void hydra_print_node_row(struct seq_file *m, const char *label,
+				 atomic_long_t *vals)
+{
+	int node;
+
+	seq_printf(m, "    %-4s", label);
+	for (node = 0; node < NUMA_NODE_COUNT; node++)
+		seq_printf(m, " %7ld", atomic_long_read(&vals[node]));
+	seq_putc(m, '\n');
+}
+
 static void hydra_print_node_matrix(struct seq_file *m,
 				    atomic_long_t mat[NUMA_NODE_COUNT][NUMA_NODE_COUNT])
 {
 	char buf[12];
-	int from, to;
+	int from;
 
 	hydra_print_node_header(m);
 	for (from = 0; from < NUMA_NODE_COUNT; from++) {
 		scnprintf(buf, sizeof(buf), "n%d", from);
-		seq_printf(m, "    %-4s", buf);
-		for (to = 0; to < NUMA_NODE_COUNT; to++)
-			seq_printf(m, " %7ld", atomic_long_read(&mat[from][to]));
-		seq_putc(m, '\n');
+		hydra_print_node_row(m, buf, mat[from]);
 	}
 }
 
@@ -323,9 +304,43 @@ static void hydra_print_pt_table(struct seq_file *m, struct hydra_stats *s,
 	}
 }
 
+static void hydra_print_faults(struct seq_file *m, const char *label,
+			       long total, long write, long present)
+{
+	hydra_print_val(m, 4, label, total);
+	seq_puts(m, "      by access:\n");
+	hydra_print_val(m, 8, "read", total - write);
+	hydra_print_val(m, 8, "write", write);
+	seq_puts(m, "      by fault type:\n");
+	hydra_print_val(m, 8, "not-present (major/fill)", total - present);
+	hydra_print_val(m, 8, "present (permission/minor)", present);
+}
+
+static void hydra_print_copied(struct seq_file *m, const char *lvl,
+			       const char *sz, long copied, long prefetched,
+			       long faults)
+{
+	char buf[48];
+
+	scnprintf(buf, sizeof(buf), "%s entries copied (%s)", lvl, sz);
+	hydra_print_val(m, 4, buf, copied);
+	hydra_print_val(m, 6, "of which prefetched", prefetched);
+	scnprintf(buf, sizeof(buf), "%s copy faults", lvl);
+	hydra_print_val(m, 4, buf, faults);
+	scnprintf(buf, sizeof(buf), "%s entries per copy fault", lvl);
+	hydra_print_ratio(m, buf, copied, faults);
+}
+
 static void hydra_stats_print(struct seq_file *m, struct hydra_stats *s,
 			      bool history)
 {
+	long rf = atomic_long_read(&s->replica_faults);
+	long rsm = atomic_long_read(&s->replica_serviced_on_master);
+	long tlb_sent = atomic_long_read(&s->tlb_shootdowns);
+	long tlb_saved = atomic_long_read(&s->tlb_shootdowns_saved);
+	char buf[24];
+	int lvl;
+
 	seq_printf(m, "%s\n", HYDRA_RULE);
 	seq_printf(m, "  MM record #%lu\n", s->id);
 	seq_printf(m, "%s\n", HYDRA_RULE);
@@ -343,104 +358,67 @@ static void hydra_stats_print(struct seq_file *m, struct hydra_stats *s,
 	}
 
 	hydra_print_section(m, "THP / page-table events");
-	hydra_print_kv(m, "THP splits", atomic_long_read(&s->thp_split));
-	hydra_print_kv(m, "THP collapses", atomic_long_read(&s->thp_collapse));
-	hydra_print_kv(m, "THP pgtable deposits",
-		       atomic_long_read(&s->deposits));
-	hydra_print_kv(m, "THP pgtable withdrawals",
-		       atomic_long_read(&s->withdrawals));
+	hydra_print_val(m, 4, "THP splits", atomic_long_read(&s->thp_split));
+	hydra_print_val(m, 4, "THP collapses",
+			atomic_long_read(&s->thp_collapse));
+	hydra_print_val(m, 4, "THP pgtable deposits",
+			atomic_long_read(&s->deposits));
+	hydra_print_val(m, 4, "THP pgtable withdrawals",
+			atomic_long_read(&s->withdrawals));
 
-	{
-		long mf = atomic_long_read(&s->master_faults);
-		long mfw = atomic_long_read(&s->master_faults_write);
-		long mfp = atomic_long_read(&s->master_faults_present);
-		long rf = atomic_long_read(&s->replica_faults);
-		long rfw = atomic_long_read(&s->replica_faults_write);
-		long rfp = atomic_long_read(&s->replica_faults_present);
-		long rsm = atomic_long_read(&s->replica_serviced_on_master);
+	hydra_print_section(m, "Replication faults");
+	seq_puts(m,
+		 "  (each of the two breakdowns below sums to the total independently)\n");
+	hydra_print_faults(m, "Master faults",
+			   atomic_long_read(&s->master_faults),
+			   atomic_long_read(&s->master_faults_write),
+			   atomic_long_read(&s->master_faults_present));
+	hydra_print_faults(m, "Replica faults", rf,
+			   atomic_long_read(&s->replica_faults_write),
+			   atomic_long_read(&s->replica_faults_present));
+	if (rf > 0) {
+		long p10 = (rsm * 1000 + rf / 2) / rf;
 
-		hydra_print_section(m, "Replication faults");
-		seq_puts(m,
-			 "  (each of the two breakdowns below sums to the total independently)\n");
-		hydra_print_kv(m, "Master faults", mf);
-		hydra_print_group(m, "by access");
-		hydra_print_sub2(m, "read", mf - mfw);
-		hydra_print_sub2(m, "write", mfw);
-		hydra_print_group(m, "by fault type");
-		hydra_print_sub2(m, "not-present (major/fill)", mf - mfp);
-		hydra_print_sub2(m, "present (permission/minor)", mfp);
-		hydra_print_kv(m, "Replica faults", rf);
-		hydra_print_group(m, "by access");
-		hydra_print_sub2(m, "read", rf - rfw);
-		hydra_print_sub2(m, "write", rfw);
-		hydra_print_group(m, "by fault type");
-		hydra_print_sub2(m, "not-present (major/fill)", rf - rfp);
-		hydra_print_sub2(m, "present (permission/minor)", rfp);
-		hydra_print_sub_pct(m, "serviced on master", rsm, rf);
+		seq_printf(m, "      %-38s %12ld   (%ld.%ld%%)\n",
+			   "serviced on master", rsm, p10 / 10, p10 % 10);
+	} else {
+		seq_printf(m, "      %-38s %12ld\n", "serviced on master", rsm);
+	}
+	seq_puts(m, "      by handling node:\n");
+	hydra_print_node_header(m);
+	hydra_print_node_row(m, "flts", s->faults_node);
+
+	hydra_print_section(m, "Master -> replica entry copying");
+	hydra_print_copied(m, "PTE", "4KB",
+			   atomic_long_read(&s->pte_entries_copied),
+			   atomic_long_read(&s->pte_entries_prefetched),
+			   atomic_long_read(&s->pte_copy_faults));
+	hydra_print_copied(m, "PMD", "2MB",
+			   atomic_long_read(&s->pmd_entries_copied),
+			   atomic_long_read(&s->pmd_entries_prefetched),
+			   atomic_long_read(&s->pmd_copy_faults));
+
+	hydra_print_section(m,
+		"Page-table entry modifications + replica fan-out (all ops)  [rows = level]");
+	seq_puts(m,
+		 "  (writes = set/clear/wrprotect/young calls; pages = replica table pages touched)\n");
+	seq_printf(m, "      %-6s %14s %14s %16s\n",
+		   "level", "writes", "pages", "avg pages/write");
+	for (lvl = 0; lvl < HYDRA_PT_NR_LEVELS; lvl++) {
+		long writes = atomic_long_read(&s->pt_writes[lvl]);
+		long pages = atomic_long_read(&s->pt_pages[lvl]);
+		long h = writes ? (pages * 100 + writes / 2) / writes : 0;
+
+		scnprintf(buf, sizeof(buf), "%ld.%02ld", h / 100, h % 100);
+		seq_printf(m, "      %-6s %14ld %14ld %16s\n",
+			   hydra_level_name[lvl], writes, pages, buf);
 	}
 
-	{
-		int node;
-
-		hydra_print_section(m, "Faults by handling node  [cols = node]");
-		hydra_print_node_header(m);
-		seq_printf(m, "    %-4s", "flts");
-		for (node = 0; node < NUMA_NODE_COUNT; node++)
-			seq_printf(m, " %7ld",
-				   atomic_long_read(&s->faults_node[node]));
-		seq_putc(m, '\n');
-	}
-
-	{
-		long pc = atomic_long_read(&s->pte_entries_copied);
-		long pp = atomic_long_read(&s->pte_entries_prefetched);
-		long pf = atomic_long_read(&s->pte_copy_faults);
-		long mc = atomic_long_read(&s->pmd_entries_copied);
-		long mp = atomic_long_read(&s->pmd_entries_prefetched);
-		long mff = atomic_long_read(&s->pmd_copy_faults);
-
-		hydra_print_section(m, "Master -> replica entry copying");
-		hydra_print_kv(m, "PTE entries copied (4KB)", pc);
-		hydra_print_sub(m, "of which prefetched", pp);
-		hydra_print_kv(m, "PTE copy faults", pf);
-		hydra_print_ratio(m, "PTE entries per copy fault", pc, pf);
-		hydra_print_kv(m, "PMD entries copied (2MB)", mc);
-		hydra_print_sub(m, "of which prefetched", mp);
-		hydra_print_kv(m, "PMD copy faults", mff);
-		hydra_print_ratio(m, "PMD entries per copy fault", mc, mff);
-	}
-
-	{
-		char buf[24];
-		int lvl;
-
-		hydra_print_section(m,
-			"Page-table entry modifications + replica fan-out (all ops)  [rows = level]");
-		seq_puts(m,
-			 "  (writes = set/clear/wrprotect/young calls; pages = replica table pages touched)\n");
-		seq_printf(m, "      %-6s %14s %14s %16s\n",
-			   "level", "writes", "pages", "avg pages/write");
-		for (lvl = 0; lvl < HYDRA_PT_NR_LEVELS; lvl++) {
-			long writes = atomic_long_read(&s->pt_writes[lvl]);
-			long pages = atomic_long_read(&s->pt_pages[lvl]);
-			long h = writes ? (pages * 100 + writes / 2) / writes : 0;
-
-			scnprintf(buf, sizeof(buf), "%ld.%02ld", h / 100, h % 100);
-			seq_printf(m, "      %-6s %14ld %14ld %16s\n",
-				   hydra_level_name[lvl], writes, pages, buf);
-		}
-	}
-
-	{
-		long tlb_sent = atomic_long_read(&s->tlb_shootdowns);
-		long tlb_saved = atomic_long_read(&s->tlb_shootdowns_saved);
-
-		hydra_print_section(m, "TLB shootdowns (remote-CPU IPIs)");
-		hydra_print_kv(m, "Total shootdowns (with optimization)", tlb_sent);
-		hydra_print_kv(m, "Shootdowns saved by node-scoping", tlb_saved);
-		hydra_print_kv(m, "Shootdowns without optimization (est)",
-			       tlb_sent + tlb_saved);
-	}
+	hydra_print_section(m, "TLB shootdowns (remote-CPU IPIs)");
+	hydra_print_val(m, 4, "Total shootdowns (with optimization)", tlb_sent);
+	hydra_print_val(m, 4, "Shootdowns saved by node-scoping", tlb_saved);
+	hydra_print_val(m, 4, "Shootdowns without optimization (est)",
+			tlb_sent + tlb_saved);
 
 	hydra_print_section(m,
 		"autoNUMA migrations: 4KB base pages  [rows = source node, cols = dest node]");
@@ -455,21 +433,12 @@ static void hydra_stats_print(struct seq_file *m, struct hydra_stats *s,
 		"Page tables: current  [rows = level, cols = node]");
 	hydra_print_pt_table(m, s, history);
 
-	{
-		int node;
-
-		hydra_print_section(m, history ?
-			"VMA owner distribution: MAX watermark  [cols = owner node]" :
-			"VMA owner distribution: current  [cols = owner node]");
-		hydra_print_node_header(m);
-		seq_printf(m, "    %-4s", "VMAs");
-		for (node = 0; node < NUMA_NODE_COUNT; node++)
-			seq_printf(m, " %7ld",
-				   atomic_long_read(history ?
-						    &s->vma_owner_max[node] :
-						    &s->vma_owner_cur[node]));
-		seq_putc(m, '\n');
-	}
+	hydra_print_section(m, history ?
+		"VMA owner distribution: MAX watermark  [cols = owner node]" :
+		"VMA owner distribution: current  [cols = owner node]");
+	hydra_print_node_header(m);
+	hydra_print_node_row(m, "VMAs",
+			     history ? s->vma_owner_max : s->vma_owner_cur);
 
 	seq_putc(m, '\n');
 }

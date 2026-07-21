@@ -10,9 +10,6 @@ struct hydra_cache_head hydra_cache[NUMA_NODE_COUNT] = {
 		.lock		= __SPIN_LOCK_UNLOCKED(hydra_cache.lock),
 		.head		= NULL,
 		.count		= ATOMIC_INIT(0),
-		.hits		= ATOMIC64_INIT(0),
-		.misses		= ATOMIC64_INIT(0),
-		.returns	= ATOMIC64_INIT(0),
 	}
 };
 
@@ -30,7 +27,7 @@ void hydra_pagetable_dtor(struct page *page)
 	}
 }
 
-bool hydra_cache_push(struct page *page, int node, bool count_stats)
+bool hydra_cache_push(struct page *page, int node)
 {
 	struct hydra_cache_head *cache;
 	unsigned long flags;
@@ -48,13 +45,11 @@ bool hydra_cache_push(struct page *page, int node, bool count_stats)
 	spin_unlock_irqrestore(&cache->lock, flags);
 
 	atomic_inc(&cache->count);
-	if (count_stats)
-		atomic64_inc(&cache->returns);
 
 	return true;
 }
 
-struct page *hydra_cache_pop(int node, bool count_stats)
+struct page *hydra_cache_pop(int node)
 {
 	struct hydra_cache_head *cache;
 	struct page *page;
@@ -69,16 +64,12 @@ struct page *hydra_cache_pop(int node, bool count_stats)
 	page = cache->head;
 	if (!page) {
 		spin_unlock_irqrestore(&cache->lock, flags);
-		if (count_stats)
-			atomic64_inc(&cache->misses);
 		return NULL;
 	}
 	cache->head = page->next_replica;
 	spin_unlock_irqrestore(&cache->lock, flags);
 
 	atomic_dec(&cache->count);
-	if (count_stats)
-		atomic64_inc(&cache->hits);
 
 	page->next_replica = NULL;
 	SetPageHydraFromCache(page);
@@ -146,8 +137,6 @@ static void hydra_chain_node_free_rcu(struct rcu_head *head)
 void hydra_free_chain_node_rcu(struct page *page)
 {
 	hydra_pt_account(page, -1);
-	if (PageHydraFromCache(page))
-		hydra_cache_count_return(page->pt_owner_mm, page_to_nid(page));
 	page->pt_owner_mm = NULL;
 	call_rcu(&page->rcu_head, hydra_chain_node_free_rcu);
 }
@@ -178,9 +167,6 @@ void hydra_free_replica_chain(struct page *primary, struct mmu_gather *tlb)
 
 		if (tlb) {
 			hydra_pt_account(cur_page, -1);
-			if (PageHydraFromCache(cur_page))
-				hydra_cache_count_return(owner_mm,
-							 page_to_nid(cur_page));
 			cur_page->pt_owner_mm = NULL;
 			tlb_remove_table(tlb, cur_page);
 		} else {
@@ -191,15 +177,6 @@ void hydra_free_replica_chain(struct page *primary, struct mmu_gather *tlb)
 	}
 }
 
-void hydra_cache_count_return(struct mm_struct *owner_mm, int node)
-{
-	if (node < 0 || node >= NUMA_NODE_COUNT)
-		return;
-
-	if (owner_mm && READ_ONCE(owner_mm->lazy_repl_enabled))
-		atomic64_inc(&hydra_cache[node].returns);
-}
-
 bool hydra_cache_return_table(struct page *page)
 {
 	if (!PageHydraFromCache(page))
@@ -207,7 +184,7 @@ bool hydra_cache_return_table(struct page *page)
 
 	hydra_pagetable_dtor(page);
 
-	if (!hydra_cache_push(page, page_to_nid(page), false))
+	if (!hydra_cache_push(page, page_to_nid(page)))
 		__free_page(page);
 
 	return true;

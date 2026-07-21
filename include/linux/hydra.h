@@ -89,15 +89,12 @@ struct hydra_cache_head {
 	spinlock_t lock;
 	struct page *head;
 	atomic_t count;
-	atomic64_t hits;
-	atomic64_t misses;
-	atomic64_t returns;
 } ____cacheline_aligned_in_smp;
 
 extern struct hydra_cache_head hydra_cache[NUMA_NODE_COUNT];
 
-extern bool hydra_cache_push(struct page *page, int node, bool count_stats);
-extern struct page *hydra_cache_pop(int node, bool count_stats);
+extern bool hydra_cache_push(struct page *page, int node);
+extern struct page *hydra_cache_pop(int node);
 extern int hydra_cache_drain_node(int node);
 extern int hydra_cache_drain_all(void);
 
@@ -137,7 +134,6 @@ void hydra_break_chain(struct page *page);
 struct mmu_gather;
 extern void hydra_free_replica_chain(struct page *primary, struct mmu_gather *tlb);
 void hydra_free_chain_node_rcu(struct page *page);
-void hydra_cache_count_return(struct mm_struct *owner_mm, int node);
 
 bool hydra_try_return_page(struct page *page);
 void hydra_dtor_free_page(struct page *page);
