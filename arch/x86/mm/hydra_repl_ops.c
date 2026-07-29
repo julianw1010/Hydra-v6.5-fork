@@ -122,7 +122,7 @@ void hydra_set_pte(pte_t *ptep, pte_t pteval)
 
 	if (READ_ONCE(pte_page->next_replica)) {
 		offset = ((unsigned long)ptep) & ~PAGE_MASK;
-		repl_val = pte_present(pteval) ? pteval : __pte(0);
+		repl_val = (pte_val(pteval) & _PAGE_PRESENT) ? pteval : __pte(0);
 
 		rcu_read_lock();
 		for (cur = pte_page->next_replica; cur && cur != pte_page; cur = cur->next_replica) {
@@ -284,7 +284,7 @@ void hydra_set_pmd(pmd_t *pmdp, pmd_t pmd)
 	if (READ_ONCE(page->next_replica)) {
 		offset = ((unsigned long)pmdp) & ~PAGE_MASK;
 
-		if ((pmd_flags(pmd) & (_PAGE_PRESENT | _PAGE_PROTNONE)) &&
+		if ((pmd_flags(pmd) & _PAGE_PRESENT) &&
 		    (pmd_trans_huge(pmd) || pmd_leaf(pmd)))
 			repl_val = pmd;
 		else
@@ -301,27 +301,6 @@ void hydra_set_pmd(pmd_t *pmdp, pmd_t pmd)
 
 	hydra_stats_pt_write(pmdp, HYDRA_PT_PMD, pages);
 }
-
-void hydra_set_pud(pud_t *pudp, pud_t pud)
-{
-	hydra_stats_pt_write(pudp, HYDRA_PT_PUD, 1);
-	native_set_pud(pudp, pud);
-}
-
-void hydra_set_p4d(p4d_t *p4dp, p4d_t p4d)
-{
-	hydra_stats_pt_write(p4dp, pgtable_l5_enabled() ?
-			     HYDRA_PT_P4D : HYDRA_PT_PGD, 1);
-	native_set_p4d(p4dp, p4d);
-}
-
-#if CONFIG_PGTABLE_LEVELS >= 5
-void hydra_set_pgd(pgd_t *pgdp, pgd_t pgd)
-{
-	hydra_stats_pt_write(pgdp, HYDRA_PT_PGD, 1);
-	native_set_pgd(pgdp, pgd);
-}
-#endif
 
 pmd_t hydra_get_pmd(pmd_t *pmdp)
 {
@@ -477,7 +456,7 @@ pmd_t hydra_pmdp_establish(pmd_t *pmdp, pmd_t pmd)
 
 	offset = ((unsigned long)pmdp) & ~PAGE_MASK;
 
-	if ((pmd_flags(pmd) & (_PAGE_PRESENT | _PAGE_PROTNONE)) &&
+	if ((pmd_flags(pmd) & _PAGE_PRESENT) &&
 	    (pmd_trans_huge(pmd) || pmd_leaf(pmd)))
 		repl_val = pmd;
 	else
@@ -546,4 +525,23 @@ bool hydra_move_normal_pmd(struct vm_area_struct *vma, unsigned long old_addr,
 out_unlock:
 	spin_unlock(ptl);
 	return res;
+}
+
+void hydra_set_pud(pud_t *pudp, pud_t pudval)
+{
+	hydra_stats_pt_write(pudp, HYDRA_PT_PUD, 1);
+	native_set_pud(pudp, pudval);
+}
+
+void hydra_set_p4d(p4d_t *p4dp, p4d_t p4dval)
+{
+	hydra_stats_pt_write(p4dp, pgtable_l5_enabled() ?
+			     HYDRA_PT_P4D : HYDRA_PT_PGD, 1);
+	native_set_p4d(p4dp, p4dval);
+}
+
+void hydra_set_pgd(pgd_t *pgdp, pgd_t pgdval)
+{
+	hydra_stats_pt_write(pgdp, HYDRA_PT_PGD, 1);
+	native_set_pgd(pgdp, pgdval);
 }

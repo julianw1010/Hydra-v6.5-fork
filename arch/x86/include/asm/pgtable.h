@@ -1480,9 +1480,10 @@ int hydra_pmdp_test_and_clear_young(struct vm_area_struct *vma, unsigned long ad
 pmd_t hydra_get_pmd(pmd_t *pmdp);
 
 void hydra_set_pmd(pmd_t *pmdp, pmd_t pmd);
-void hydra_set_pud(pud_t *pudp, pud_t pud);
-void hydra_set_p4d(p4d_t *p4dp, p4d_t p4d);
-void hydra_set_pgd(pgd_t *pgdp, pgd_t pgd);
+
+void hydra_set_pud(pud_t *pudp, pud_t pudval);
+void hydra_set_p4d(p4d_t *p4dp, p4d_t p4dval);
+void hydra_set_pgd(pgd_t *pgdp, pgd_t pgdval);
 
 #endif	/* __ASSEMBLY__ */
 

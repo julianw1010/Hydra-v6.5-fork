@@ -3,6 +3,8 @@
 #include <linux/huge_mm.h>
 #include <linux/pgtable.h>
 #include <linux/sched.h>
+#include <linux/sched/mm.h>
+#include <linux/sched/task.h>
 #include <linux/hydra.h>
 #include <asm/pgtable.h>
 #include <asm/pgalloc.h>
@@ -550,10 +552,10 @@ int hydra_repl_fault(struct vm_fault *vmf, int fault_node)
 
 	ret = hydra_repl_try_pmd(mm, vmf->vma, vmf->address, vmf->flags,
 				      repl_node, master_node);
-	if (ret != -EAGAIN)
-		return ret;
+	if (ret == -EAGAIN)
+		ret = hydra_repl_try_pte(vmf, repl_node, master_node);
 
-	return hydra_repl_try_pte(vmf, repl_node, master_node);
+	return ret;
 }
 
 static bool hydra_pud_pmd_will_free(unsigned long pud_base, unsigned long pud_end,

@@ -69,22 +69,6 @@ static inline pmd_t *hydra_walk_to_pmd(struct mm_struct *mm,
 	return pmd_offset(pud, address);
 }
 
-static inline pte_t *hydra_walk_to_pte(struct mm_struct *mm,
-				       unsigned long address, int node)
-{
-	pmd_t *pmd;
-
-	pmd = hydra_walk_to_pmd(mm, address, node);
-	if (HYDRA_WALK_BAD(pmd))
-		return (pte_t *)pmd;
-
-	if (pmd_none(*pmd) || unlikely(pmd_bad(*pmd)) ||
-	    unlikely(pmd_trans_huge(*pmd)))
-		return (pte_t *)HYDRA_WALK_NONE;
-
-	return pte_offset_kernel(pmd, address);
-}
-
 struct hydra_cache_head {
 	spinlock_t lock;
 	struct page *head;
@@ -308,7 +292,6 @@ struct hydra_fault_ctx {
 	bool replica;
 	bool write;
 	bool present;
-	int node;
 	unsigned int saved;
 };
 
@@ -318,9 +301,12 @@ static inline struct hydra_fault_ctx hydra_stats_fault_begin(struct mm_struct *m
 	struct hydra_fault_ctx c = { .s = mm->hydra_stats };
 
 	if (c.s) {
-		c.node = numa_node_id();
+		int node = numa_node_id();
+
+		if (node >= 0 && node < NUMA_NODE_COUNT)
+			atomic_long_inc(&c.s->faults_node[node]);
 		c.replica = mm->lazy_repl_enabled &&
-			    (c.node != vma->master_pgd_node);
+			    (node != vma->master_pgd_node);
 		c.write = !!(flags & FAULT_FLAG_WRITE);
 		c.present = !!(flags & FAULT_FLAG_PROT);
 		if (c.replica) {
@@ -353,8 +339,6 @@ static inline void hydra_stats_fault_end(struct hydra_fault_ctx c)
 		if (c.present)
 			atomic_long_inc(&s->master_faults_present);
 	}
-	if (c.node >= 0 && c.node < NUMA_NODE_COUNT)
-		atomic_long_inc(&s->faults_node[c.node]);
 }
 
 static inline void hydra_stats_numa(struct mm_struct *mm, bool huge,

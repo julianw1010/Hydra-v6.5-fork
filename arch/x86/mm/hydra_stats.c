@@ -75,8 +75,6 @@ void hydra_stats_detach(struct mm_struct *mm)
 		return;
 	}
 
-	s->end_jiffies = jiffies;
-
 	for (i = 0; i < NUMA_NODE_COUNT; i++) {
 		if (mm->repl_pgd[i] && mm->repl_pgd[i] != mm->pgd)
 			count++;
@@ -85,6 +83,8 @@ void hydra_stats_detach(struct mm_struct *mm)
 
 	printk(KERN_INFO "HYDRA: disabled page table replication for mm %px on %d nodes\n",
 	       mm, count);
+
+	s->end_jiffies = jiffies;
 
 	spin_lock(&hydra_stats_lock);
 	list_move_tail(&s->list, &hydra_hist_list);
@@ -402,15 +402,15 @@ static void hydra_stats_print(struct seq_file *m, struct hydra_stats *s,
 		"Page-table entry modifications + replica fan-out (all ops)  [rows = level]");
 	seq_puts(m,
 		 "  (writes = set/clear/wrprotect/young calls; pages = replica table pages touched)\n");
-	seq_printf(m, "      %-6s %14s %14s %16s\n",
+	seq_printf(m, "    %-6s %14s %14s %16s\n",
 		   "level", "writes", "pages", "avg pages/write");
-	for (lvl = 0; lvl < HYDRA_PT_NR_LEVELS; lvl++) {
+	for (lvl = HYDRA_PT_PGD; lvl <= HYDRA_PT_PTE; lvl++) {
 		long writes = atomic_long_read(&s->pt_writes[lvl]);
 		long pages = atomic_long_read(&s->pt_pages[lvl]);
 		long h = writes ? (pages * 100 + writes / 2) / writes : 0;
 
 		scnprintf(buf, sizeof(buf), "%ld.%02ld", h / 100, h % 100);
-		seq_printf(m, "      %-6s %14ld %14ld %16s\n",
+		seq_printf(m, "    %-6s %14ld %14ld %16s\n",
 			   hydra_level_name[lvl], writes, pages, buf);
 	}
 

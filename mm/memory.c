@@ -111,6 +111,7 @@ static bool vmf_pte_changed(struct vm_fault *vmf);
 
 #if defined(CONFIG_X86) && defined(CONFIG_SYSCTL)
 int sysctl_hydra_repl_order __read_mostly = 9;
+int sysctl_hydra_first_touch __read_mostly = 1;
 int sysctl_hydra_auto_enable __read_mostly = 0;
 #endif
 
@@ -5122,6 +5123,33 @@ vm_fault_t __handle_mm_fault(struct vm_area_struct *vma,
 	}
 
 	on_replica = mm->lazy_repl_enabled && (node_to_use != owner_node);
+
+	if (on_replica && sysctl_hydra_first_touch) {
+		bool write = flags & (FAULT_FLAG_WRITE | FAULT_FLAG_UNSHARE);
+		pmd_t *mp = hydra_walk_to_pmd(mm, address, owner_node);
+		bool needs_master = false;
+
+		if (HYDRA_WALK_BAD(mp) || pmd_none(*mp)) {
+			needs_master = true;
+		} else if (pmd_trans_huge(*mp)) {
+			pmd_t v = READ_ONCE(*mp);
+
+			if (pmd_protnone(v) || (write && !pmd_write(v)))
+				needs_master = true;
+		} else if (!pmd_bad(*mp)) {
+			pte_t v = READ_ONCE(*pte_offset_kernel(mp, address));
+
+			if (!(pte_val(v) & _PAGE_PRESENT) ||
+			    (write && !pte_write(v)))
+				needs_master = true;
+		}
+
+		if (needs_master) {
+			node_to_use = owner_node;
+			on_replica = false;
+			hydra_stats_mark_serviced(mm);
+		}
+	}
 
 	pgd = hydra_pgd_offset(mm, address, node_to_use);
 	p4d = p4d_alloc(mm, pgd, address);

@@ -590,7 +590,6 @@ int pudp_test_and_clear_young(struct vm_area_struct *vma,
 {
 	int ret = 0;
 
-	hydra_stats_pt_write(pudp, HYDRA_PT_PUD, 1);
 	if (pud_young(*pudp))
 		ret = test_and_clear_bit(_PAGE_BIT_ACCESSED,
 					 (unsigned long *)pudp);

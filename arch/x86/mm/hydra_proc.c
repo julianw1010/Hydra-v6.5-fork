@@ -6,6 +6,7 @@
 #include <linux/hydra.h>
 
 extern int sysctl_hydra_repl_order;
+extern int sysctl_hydra_first_touch;
 extern int sysctl_hydra_tlbflush_opt;
 
 static struct proc_dir_entry *hydra_dir;
@@ -19,6 +20,10 @@ struct hydra_int_knob {
 
 static const struct hydra_int_knob hydra_repl_order_knob = {
 	"repl_order", &sysctl_hydra_repl_order, 0, 9,
+};
+
+static const struct hydra_int_knob hydra_first_touch_knob = {
+	"first_touch", &sysctl_hydra_first_touch, 0, 1,
 };
 
 static const struct hydra_int_knob hydra_tlbflush_opt_knob = {
@@ -162,7 +167,7 @@ static const struct proc_ops hydra_status_ops = {
 };
 
 static ssize_t hydra_history_write(struct file *file, const char __user *ubuf,
-				  size_t count, loff_t *ppos)
+				   size_t count, loff_t *ppos)
 {
 	long val;
 	int ret, freed;
@@ -199,6 +204,10 @@ static int __init hydra_proc_init(void)
 
 	if (!proc_create_data("repl_order", 0644, hydra_dir, &hydra_knob_ops,
 			      (void *)&hydra_repl_order_knob))
+		goto fail;
+
+	if (!proc_create_data("first_touch", 0644, hydra_dir, &hydra_knob_ops,
+			      (void *)&hydra_first_touch_knob))
 		goto fail;
 
 	if (!proc_create_data("tlbflush_opt", 0644, hydra_dir, &hydra_knob_ops,
