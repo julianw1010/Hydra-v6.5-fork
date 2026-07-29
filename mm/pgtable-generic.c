@@ -192,6 +192,11 @@ pgtable_t pgtable_trans_huge_withdraw(struct mm_struct *mm, pmd_t *pmdp)
 
 	/* FIFO */
 	pgtable = pmd_huge_pte(mm, pmdp);
+	if (!pgtable) {
+		pr_emerg("HYDRA: withdraw from empty deposit list, mm %px pmdp %px pmd %lx\n",
+			 mm, pmdp, pmd_val(*pmdp));
+		BUG();
+	}
 	pmd_huge_pte(mm, pmdp) = list_first_entry_or_null(&pgtable->lru,
 							  struct page, lru);
 	if (pmd_huge_pte(mm, pmdp))

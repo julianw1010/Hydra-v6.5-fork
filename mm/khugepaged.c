@@ -756,6 +756,7 @@ static void __collapse_huge_page_copy_failed(pte_t *pte,
 	 * acquiring anon_vma_lock_write is unnecessary.
 	 */
 	pmd_ptl = pmd_lock(vma->vm_mm, pmd);
+	hydra_free_replica_chain(pmd_pgtable(orig_pmd), NULL);
 	pmd_populate(vma->vm_mm, pmd, pmd_pgtable(orig_pmd));
 	spin_unlock(pmd_ptl);
 	/*
@@ -1178,6 +1179,7 @@ static int collapse_huge_page(struct mm_struct *mm, unsigned long address,
 		pte_unmap(pte);
 		spin_lock(pmd_ptl);
 		BUG_ON(!pmd_none(*pmd));
+		hydra_free_replica_chain(pmd_pgtable(_pmd), NULL);
 		/*
 		 * We can only use set_pmd_at when establishing
 		 * hugepmds and never for establishing regular pmds that
@@ -1185,7 +1187,6 @@ static int collapse_huge_page(struct mm_struct *mm, unsigned long address,
 		 */
 		pmd_populate(mm, pmd, pmd_pgtable(_pmd));
 		spin_unlock(pmd_ptl);
-		hydra_free_replica_chain(pmd_pgtable(_pmd), NULL);
 		anon_vma_unlock_write(vma->anon_vma);
 		goto out_up_write;
 	}
@@ -1200,10 +1201,8 @@ static int collapse_huge_page(struct mm_struct *mm, unsigned long address,
 					   vma, address, pte_ptl,
 					   &compound_pagelist);
 	pte_unmap(pte);
-	if (unlikely(result != SCAN_SUCCEED)) {
-		hydra_free_replica_chain(pmd_pgtable(_pmd), NULL);
+	if (unlikely(result != SCAN_SUCCEED))
 		goto out_up_write;
-	}
 
 	/*
 	 * spin_lock() below is not the equivalent of smp_wmb(), but
@@ -1214,13 +1213,12 @@ static int collapse_huge_page(struct mm_struct *mm, unsigned long address,
 	__SetPageUptodate(hpage);
 	pgtable = pmd_pgtable(_pmd);
 
-	hydra_free_replica_chain(pgtable, NULL);
-
 	_pmd = mk_huge_pmd(hpage, vma->vm_page_prot);
 	_pmd = maybe_pmd_mkwrite(pmd_mkdirty(_pmd), vma);
 
 	spin_lock(pmd_ptl);
 	BUG_ON(!pmd_none(*pmd));
+	hydra_free_replica_chain(pgtable, NULL);
 	page_add_new_anon_rmap(hpage, vma, address);
 	lru_cache_add_inactive_or_unevictable(hpage, vma);
 	pgtable_trans_huge_deposit(mm, pmd, pgtable);
